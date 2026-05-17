@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# =============================================================================
+# .githooks/pre-commit
+#
+# Runs before the commit message editor opens.
+# Failing (exit non-zero) aborts the commit entirely.
+#
+# Checks performed
+# ────────────────
+#   1.  No merge-conflict markers left in staged files
+#   2.  No debug println / TODO-FIXME bombs in staged Java files
+#   3.  Version consistency — VERSION, pom.xml, and plugin.yml must all agree
+#   4.  If CHANGELOG.md is staged, VERSION must also be staged (or already match)
+#   5.  VERSION must match the top-most  ## [x.y.z]  entry in CHANGELOG.md
+#   6.  [Main Branch Only] VERSION must be different from the previous commit
+# =============================================================================
+
+set -euo pipefail
+
+RED='\033[0;31m'
+YEL='\033[0;33m'
+GRN='\033[0;32m'
+BLU='\033[0;34m'
+NC='\033[0m'
+
+PASS="${GRN}✔${NC}"
+WARN="${YEL}⚠${NC}"
+FAIL="${RED}✖${NC}"
+
+errors=0
+warnings=0
+
+err()  { echo -e "${FAIL} ${RED}$*${NC}"; errors=$(( errors + 1 )); }
+warn() { echo -e "${WARN} ${YEL}$*${NC}"; warnings=$(( warnings + 1 )); }
+ok()   { echo -e "${PASS} $*"; }
+info() { echo -e "${BLU}▸${NC} $*"; }
+
+echo ""
+echo -e "${BLU}┌─ pre-commit checks ────────────────────────────────────────────┐${NC}"
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+# Get value of a key from the staged (index) version of a file.
+staged_content() {
+  git show ":$1" 2>/dev/null || true
+}
+
+# List all staged files (added, copied, modified — not deleted).
+staged_files() {
+  git diff --cached --name-only --diff-filter=ACMR
+}
+
+# ── 1. Merge-conflict markers ────────────────────────────────────────────────
+info "Checking for merge-conflict markers…"
+CONFLICT_FILES=$(staged_files | xargs grep -l '^<<<<<<< \|^=======$\|^>>>>>>> ' 2>/dev/null || true)
+if [[ -n "$CONFLICT_FILES" ]]; then
+  err "Unresolved merge conflicts found in:"
+  echo "$CONFLICT_FILES" | sed 's/^/     /'
+else
+  ok "No conflict markers"
+fi
+
+# ── 2. Debug / leftover code in Java files ───────────────────────────────────
+info "Checking staged Java files for debug code…"
+JAVA_FILES=$(staged_files | grep '\.java$' || true)
+if [[ -n "$JAVA_FILES" ]]; then
+  DEBUG_HITS=$(echo "$JAVA_FILES" | xargs grep -nE \
+    'System\.(out|err)\.print|\.printStackTrace\(\)|Thread\.dumpStack\(\)' \
+    2>/dev/null || true)
+  if [[ -n "$DEBUG_HITS" ]]; then
+    warn "Debug statements found (consider removing before committing):"
+    echo "$DEBUG_HITS" | sed 's/^/     /'
+  else
+    ok "No debug statements"
+  fi
+
+  # FIXME / HACK markers — warn only, don't block
+  FIXME_HITS=$(echo "$JAVA_FILES" | xargs grep -nE 'FIXME|HACK' 2>/dev/null || true)
+  if [[ -n "$FIXME_HITS" ]]; then
+    warn "FIXME/HACK markers found (reminder to address them):"
+    echo "$FIXME_HITS" | sed 's/^/     /'
+  fi
+else
+  ok "No Java files staged"
+fi
+
+# ── 3. Version consistency across VERSION / pom.xml / plugin.yml ─────────────
+info "Checking version consistency…"
+
+# Read VERSION from the staged index (or working tree if not staged)
+if git diff --cached --name-only | grep -q '^VERSION$'; then
+  VERSION_FILE=$(staged_content "VERSION" | tr -d '[:space:]')
+else
+  VERSION_FILE=$(cat VERSION 2>/dev/null | tr -d '[:space:]' || true)
+fi
+
+if [[ -z "$VERSION_FILE" ]]; then
+  err "VERSION file is missing or empty."
+else
+  ok "VERSION = $VERSION_FILE"
+
+  # pom.xml
+  if git diff --cached --name-only | grep -q '^pom\.xml$'; then
+    POM_VER=$(staged_content "pom.xml" \
+      | grep -m1 '<version>' \
+      | sed 's/.*<version>\(.*\)<\/version>.*/\1/' \
+      | tr -d '[:space:]')
+  else
+    POM_VER=$(grep -m1 '<version>' pom.xml 2>/dev/null \
+      | sed 's/.*<version>\(.*\)<\/version>.*/\1/' \
+      | tr -d '[:space:]' || true)
+  fi
+
+  if [[ -z "$POM_VER" ]]; then
+    warn "Could not read version from pom.xml — skipping pom check."
+  elif [[ "$POM_VER" != "$VERSION_FILE" ]]; then
+    err "pom.xml version ($POM_VER) does not match VERSION ($VERSION_FILE)."
+    echo "     Run:  mvn versions:set -DnewVersion=$VERSION_FILE -DgenerateBackupPoms=false"
+  else
+    ok "pom.xml version matches ($POM_VER)"
+  fi
+
+  # plugin.yml
+  PLUGIN_YML="src/main/resources/plugin.yml"
+  if git diff --cached --name-only | grep -q "^${PLUGIN_YML}$"; then
+    PLUGIN_VER=$(staged_content "$PLUGIN_YML" \
+      | grep '^version:' \
+      | sed "s/^version:[[:space:]]*//" \
+      | tr -d "'\"\n[:space:]")
+  else
+    PLUGIN_VER=$(grep '^version:' "$PLUGIN_YML" 2>/dev/null \
+      | sed "s/^version:[[:space:]]*//" \
+      | tr -d "'\"\n[:space:]" || true)
+  fi
+
+  if [[ -z "$PLUGIN_VER" ]]; then
+    warn "Could not read version from $PLUGIN_YML — skipping plugin.yml check."
+  elif [[ "$PLUGIN_VER" != "$VERSION_FILE" ]]; then
+    err "plugin.yml version ($PLUGIN_VER) does not match VERSION ($VERSION_FILE)."
+    echo "     Fix:  sed -i \"s/^version:.*/version: '$VERSION_FILE'/\" $PLUGIN_YML"
+  else
+    ok "plugin.yml version matches ($PLUGIN_VER)"
+  fi
+fi
+
+# ── 4. If CHANGELOG.md is staged, VERSION must also be staged (or match) ──────
+info "Checking changelog ↔ VERSION relationship…"
+CHANGELOG_STAGED=$(staged_files | grep '^CHANGELOG\.md$' || true)
+VERSION_STAGED=$(staged_files | grep '^VERSION$' || true)
+
+if [[ -n "$CHANGELOG_STAGED" && -z "$VERSION_STAGED" ]]; then
+  CHANGELOG_VER=$(staged_content "CHANGELOG.md" \
+    | grep -m1 '^## \[' \
+    | sed 's/^## \[\([^]]*\)\].*/\1/')
+
+  if [[ -n "$VERSION_FILE" && "$CHANGELOG_VER" != "$VERSION_FILE" ]]; then
+    err "CHANGELOG.md is staged with a new version ($CHANGELOG_VER) but VERSION still reads $VERSION_FILE."
+    echo "     Update VERSION to $CHANGELOG_VER and stage it:  echo $CHANGELOG_VER > VERSION && git add VERSION"
+  else
+    ok "Changelog staged — VERSION already matches ($VERSION_FILE)"
+  fi
+fi
+
+# ── 5. VERSION must match the top entry in CHANGELOG.md ──────────────────────
+info "Checking VERSION matches top CHANGELOG.md entry…"
+if [[ -n "$VERSION_FILE" ]]; then
+  if git diff --cached --name-only | grep -q '^CHANGELOG\.md$'; then
+    CHANGELOG_TOP=$(staged_content "CHANGELOG.md" \
+      | grep -m1 '^## \[' \
+      | sed 's/^## \[\([^]]*\)\].*/\1/')
+  else
+    CHANGELOG_TOP=$(grep -m1 '^## \[' CHANGELOG.md 2>/dev/null \
+      | sed 's/^## \[\([^]]*\)\].*/\1/' || true)
+  fi
+
+  if [[ -z "$CHANGELOG_TOP" ]]; then
+    warn "Could not read top version from CHANGELOG.md."
+  elif [[ "$CHANGELOG_TOP" != "$VERSION_FILE" ]]; then
+    err "VERSION ($VERSION_FILE) does not match the top CHANGELOG.md entry (## [$CHANGELOG_TOP])."
+    echo "     Either update VERSION to $CHANGELOG_TOP or add a ## [$VERSION_FILE] block to CHANGELOG.md."
+  else
+    ok "VERSION matches CHANGELOG.md top entry ($CHANGELOG_TOP)"
+  fi
+fi
+
+# ── 6. [NEW] Main Branch Version Bump Check ──────────────────────────────────
+info "Checking if version was bumped for main branch…"
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+
+if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+  # Grab the version from the last commit
+  HEAD_VERSION=$(git show HEAD:VERSION 2>/dev/null | tr -d '[:space:]' || true)
+  
+  if [[ -z "$HEAD_VERSION" ]]; then
+    ok "No previous VERSION found in main (first commit)."
+  elif [[ "$VERSION_FILE" == "$HEAD_VERSION" ]]; then
+    err "You are committing to $CURRENT_BRANCH, but the VERSION ($VERSION_FILE) has not changed."
+    echo -e "     Please bump the version before committing to main."
+    echo -e "     Run:  ${BLU}./bump-version.sh <new_version>${NC} and stage the changes."
+  else
+    ok "Version bumped ($HEAD_VERSION → $VERSION_FILE) for main branch commit"
+  fi
+else
+  ok "Not on main branch ($CURRENT_BRANCH), version bump check skipped."
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+echo -e "${BLU}└────────────────────────────────────────────────────────────────┘${NC}"
+echo ""
+
+if (( errors > 0 )); then
+  echo -e "${FAIL} ${RED}Pre-commit failed: $errors error(s), $warnings warning(s).${NC}"
+  echo -e "     Fix the errors above and run  ${BLU}git add${NC}  again before committing."
+  echo ""
+  exit 1
+fi
+
+if (( warnings > 0 )); then
+  echo -e "${WARN} ${YEL}Pre-commit passed with $warnings warning(s) — review them above.${NC}"
+else
+  echo -e "${PASS} ${GRN}All pre-commit checks passed.${NC}"
+fi
+echo ""
+exit 0

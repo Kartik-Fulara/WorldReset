@@ -1,0 +1,220 @@
+# ============================================================
+# WorldResetPlugin — config.yml  v1.2.0
+# All values can be changed in-game with /worldreset config set
+# Server-properties patching is now in server-properties.yml
+# ============================================================
+
+reset:
+  # Seconds of countdown before the world resets.
+  # Set to 0 for an instant reset with no countdown.
+  countdown: 10
+
+  # How often (in seconds) to broadcast the countdown message.
+  # Ignored during the final 5 seconds (broadcasts every second automatically).
+  broadcast-interval: 5
+
+  # Message shown to all players when they are kicked during the reset.
+  kick-message: "World resetting — reconnect in ~90 seconds!"
+
+  # Minimum seconds between resets. 0 = no cooldown.
+  # Players with worldreset.bypass-cooldown skip this check.
+  cooldown-seconds: 300
+
+  # Show an ActionBar timer during the last N seconds of the countdown.
+  actionbar-countdown: true
+  actionbar-threshold: 30
+
+# ── Worlds ────────────────────────────────────────────────────────────────────
+worlds:
+  - world
+  - world_nether
+  - world_the_end
+
+# ── Advanced world settings ────────────────────────────────────────────────────
+# Custom environments (NORMAL/NETHER/THE_END) and generator plugins are
+# configured in advanced.yml (auto-created in the plugin data folder).
+
+# ── Seeds ─────────────────────────────────────────────────────────────────────
+seeds: {}
+
+# ── Hardcore ──────────────────────────────────────────────────────────────────
+hardcore: {}
+
+# ── Extra delete paths ────────────────────────────────────────────────────────
+extra-paths:
+  delete:
+    - logs
+    - playerdata
+    - advancements
+    - stats
+  preserve: []
+
+# ── Gamerules ─────────────────────────────────────────────────────────────────
+gamerules:
+  naturalRegeneration: "false"
+  keepInventory: "false"
+  doFireTick: "true"
+  mobGriefing: "true"
+  showDeathMessages: "true"
+
+# ── Difficulty ────────────────────────────────────────────────────────────────
+difficulty: HARD
+
+# ── Messages ──────────────────────────────────────────────────────────────────
+messages:
+  title: "&cWORLD RESETTING"
+  subtitle: "&eNew world in &c{seconds}&e seconds!"
+  countdown-say: "&c[RESET] &eWorld resetting in &c{seconds}&e seconds. Reconnect soon!"
+  countdown-start: "&c[RESET] &eWorld reset initiated by &f{player}&e. Stand by!"
+  reset-complete: "&a[RESET] &eWorld has been reset! Welcome to the fresh world!"
+  reset-cancelled: "&a[RESET] &eWorld reset has been cancelled."
+
+# ── Restart mode ──────────────────────────────────────────────────────────────
+restart:
+  use-restart: true
+
+# ── Async deletion ────────────────────────────────────────────────────────────
+async:
+  delete-async: true
+
+# ── Backup ────────────────────────────────────────────────────────────────────
+backup:
+  enabled: false
+  directory: "backups"
+  keep: 5
+
+# ── Schedule ──────────────────────────────────────────────────────────────────
+schedule:
+  enabled: false
+  mode: "interval"
+  interval-seconds: 86400
+  daily-time: "04:00"
+  # Timezone for daily mode. Use IANA zone IDs: "UTC", "America/New_York", "Europe/London", etc.
+  # Defaults to UTC — explicit is better than relying on the host OS timezone.
+  timezone: "UTC"
+  # Safety floor: intervals shorter than this (in seconds) will be raised to this value.
+  # Useful for testing; lower with caution on production servers.
+  min-interval-seconds: 60
+
+# ── Whitelist during reset ────────────────────────────────────────────────────
+whitelist-during-reset: false
+
+# ── World Border ──────────────────────────────────────────────────────────────
+world-border:
+  enabled: false
+  size: 1000.0
+  center-x: 0.0
+  center-z: 0.0
+
+# ── Spawn ─────────────────────────────────────────────────────────────────────
+spawn:
+  enabled: false
+  world: "world"
+  x: 0.0
+  y: 64.0
+  z: 0.0
+  yaw: 0.0
+  pitch: 0.0
+
+# ── Pre / Post reset commands ─────────────────────────────────────────────────
+pre-reset-commands: []
+post-reset-commands: []
+
+# If true, a pre-reset command that fails (returns false or throws) will abort the
+# entire reset and broadcast an error. If false (default), failures are logged as
+# warnings and the reset continues.
+pre-reset-commands-strict: false
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+#
+# Set discord-webhook to your webhook URL to enable Discord notifications.
+# Leave any template value empty ("") to use the built-in Java default.
+#
+# HOW TO CHANGE THE TEMPLATE
+# ───────────────────────────
+# Edit the discord-start-template and discord-complete-template strings below.
+# Use \n inside a quoted string for a new line in Discord.
+# You can also use a YAML block scalar (lines under |) for multi-line templates.
+#
+# AVAILABLE PLACEHOLDERS
+# ───────────────────────
+#  {server}          Server name (from server.properties)
+#  {initiator}       Who started the reset: player name, "Schedule", or "Vote"
+#  {worlds}          Comma-separated list of worlds being reset
+#  {worlds_detail}   Each world with its environment, seed, and hardcore status
+#  {mode}            restart  OR  live-regeneration
+#  {time}            Date/time the reset occurred (server timezone)
+#  {gamerules}       Configured gamerule key=value pairs
+#  {difficulty}      Configured difficulty (EASY/NORMAL/HARD/PEACEFUL)
+#  {seeds}           Worlds with locked seeds; "(none — random each reset)" if none
+#  {extra_paths}     Paths deleted on reset (logs, playerdata, etc.)
+#  {voter_list}      Player names who voted yes (Vote-triggered resets only)
+#  {vote_result}     e.g. "8 voted yes"  —  shows "N/A" for non-vote resets
+#  {player_data}     What player data is cleared (inventory, XP, etc.)
+#  {backup}          Backup status: "enabled (keep N)" or "disabled"
+#  {duration}        How long the reset took  (complete message only)
+#
+notifications:
+  discord-webhook: ""
+
+  # ── Start template ──────────────────────────────────────────────────────
+  # Sent immediately when a reset is confirmed (at the start of the countdown
+  # or when an instant reset fires).  All placeholders work here except
+  # {duration} which is not yet known.
+  discord-start-template: |
+    🔄 **World Reset STARTED** — **{server}**
+    **Initiated by:** {initiator}
+    **Worlds:** {worlds}
+    **Mode:** {mode}  |  **Difficulty:** {difficulty}
+    ─────────────────────────────
+    🌱 **Seeds (locked):** {seeds}
+    📋 **Gamerules:** {gamerules}
+    🗑️ **Extra paths deleted:** {extra_paths}
+    🧹 **Player data cleared:** {player_data}
+    💾 **Backup:** {backup}
+    🗳️ **Vote result:** {vote_result}  |  **Voters:** {voter_list}
+    ⏰ **Time:** {time}
+
+  # ── Complete template ────────────────────────────────────────────────────
+  # Sent after the reset finishes (worlds regenerated or server restarted).
+  # All placeholders work here including {duration}.
+  discord-complete-template: |
+    ✅ **World Reset COMPLETE** — **{server}**
+    **Initiated by:** {initiator}  |  **Mode:** {mode}
+    **Worlds:** {worlds}
+    ─────────────────────────────
+    🗺️ **World detail:**
+    {worlds_detail}
+    ⏱️ **Duration:** {duration}  |  **Time:** {time}
+
+  # ── Milestone warnings (during countdown) ───────────────────────────────
+  # Simple text message — {seconds} placeholder only.
+  discord-milestone-message: "⏰ World resetting in {seconds} seconds!"
+  discord-countdown-milestones:
+    - 60
+    - 30
+    - 10
+
+  # ── Legacy simple messages (deprecated — use templates above instead) ───
+  # If both a template and a legacy message are set, the template takes
+  # precedence.  Leave these empty unless you need backwards compat.
+  discord-start-message: ""
+  discord-complete-message: ""
+
+# ── Player Data ───────────────────────────────────────────────────────────────
+player-data:
+  enabled: false
+  clear-inventory: true
+  clear-ender-chest: false
+  clear-xp: true
+  reset-health: true
+  reset-hunger: true
+  clear-advancements: true
+  clear-stats: true
+
+# ── Community vote-to-reset ───────────────────────────────────────────────────
+vote:
+  enabled: false
+  required-percent: 60       # % of online players who must vote yes
+  vote-duration-seconds: 60  # window to collect votes
+  min-players: 3             # minimum online players required to start a vote

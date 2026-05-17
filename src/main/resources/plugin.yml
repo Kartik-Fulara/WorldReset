@@ -1,0 +1,52 @@
+name: WorldResetPlugin
+version: '1.3.0'
+main: com.worldreset.WorldResetPlugin
+author: WorldResetPlugin
+description: Full world reset with configurable gamerules, worlds, schedule, backups, and server-properties patching
+
+commands:
+  worldreset:
+    description: World reset management
+    usage: /worldreset help
+    permission: worldreset.use
+    aliases: [wr, wrs, wreset]
+  resetvote:
+    description: Start or participate in a community vote to reset the world
+    usage: /resetvote [yes]
+    permission: worldreset.vote
+    aliases: [rv, vote-reset, voterestart]
+
+permissions:
+  worldreset.admin:
+    description: Access to all WorldReset commands (bypasses all sub-permission checks)
+    default: op
+  worldreset.use:
+    description: Required to run any /worldreset sub-command (granted to all sub-permission holders)
+    default: op
+  worldreset.start:
+    description: Start a world reset
+    default: op
+  worldreset.cancel:
+    description: Cancel a running reset
+    default: op
+  worldreset.status:
+    description: View reset status and settings
+    default: op
+  worldreset.reload:
+    description: Reload plugin config
+    default: op
+  worldreset.schedule:
+    description: View and manage the auto-reset schedule
+    default: op
+  worldreset.backup:
+    description: Manage and trigger backups
+    default: op
+  worldreset.history:
+    description: View the reset history log
+    default: op
+  worldreset.vote:
+    description: Start or participate in a community reset vote
+    default: true
+  worldreset.bypass-cooldown:
+    description: Bypass the reset cooldown
+    default: op

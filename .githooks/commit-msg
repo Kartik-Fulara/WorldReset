@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# =============================================================================
+# .githooks/commit-msg
+#
+# Validates that every commit message follows the Conventional Commits spec:
+#   https://www.conventionalcommits.org/en/v1.0.0/
+#
+# Valid formats
+# ─────────────
+#   <type>: <description>
+#   <type>(<scope>): <description>
+#   <type>!: <description>              ← breaking change shorthand
+#   <type>(<scope>)!: <description>
+#
+# Allowed types
+# ─────────────
+#   feat     – new feature
+#   fix      – bug fix
+#   docs     – documentation only
+#   style    – formatting, no logic change
+#   refactor – code restructure, no feature / fix
+#   perf     – performance improvement
+#   test     – add or correct tests
+#   build    – build system or dependency changes (Maven, pom.xml)
+#   ci       – CI configuration (.github/workflows, hooks)
+#   chore    – maintenance tasks that don't touch src or tests
+#   revert   – revert a previous commit
+#
+# Special exemptions (skipped silently, exit 0)
+# ──────────────────────────────────────────────
+#   • Merge commits   (starts with "Merge ")
+#   • Revert commits  (starts with "Revert ")
+#   • Bot commits     (starts with "chore(release):")  — written by GH Actions
+#
+# Blocked commits (exit 1)
+# ─────────────────────────
+#   • WIP commits     (starts with "WIP" or "wip")     — must be squashed before pushing
+# =============================================================================
+
+COMMIT_MSG_FILE="$1"
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+RED='\033[0;31m'
+YEL='\033[0;33m'
+GRN='\033[0;32m'
+BLU='\033[0;34m'
+NC='\033[0m'
+
+# ── Exemptions ────────────────────────────────────────────────────────────────
+case "$COMMIT_MSG" in
+  "Merge "*)            exit 0 ;;
+  "Revert "*)           exit 0 ;;
+  "chore(release):"*)   exit 0 ;;   # bot commit — already conventional
+  "WIP"*|"wip"*)
+    echo -e "${RED}✖ WIP commits must be squashed before they reach main.${NC}"
+    echo "  Rebase and squash this commit into a properly typed one."
+    exit 1
+    ;;
+esac
+
+# ── Pattern ───────────────────────────────────────────────────────────────────
+# type(optional-scope)optional-!: description
+TYPES="feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert"
+PATTERN="^(${TYPES})(\([a-zA-Z0-9_\-]+\))?!?:[[:space:]].+"
+
+FIRST_LINE=$(echo "$COMMIT_MSG" | head -1)
+
+if ! echo "$FIRST_LINE" | grep -Eq "$PATTERN"; then
+  echo ""
+  echo -e "${RED}✖ Invalid commit message format.${NC}"
+  echo ""
+  echo "  Your message:  $FIRST_LINE"
+  echo ""
+  echo "  Required format:"
+  echo -e "  ${BLU}<type>${NC}(<scope>): <description>"
+  echo ""
+  echo "  Allowed types:"
+  echo "    feat      – new feature"
+  echo "    fix       – bug fix"
+  echo "    docs      – documentation only"
+  echo "    style     – formatting, no logic change"
+  echo "    refactor  – code restructure"
+  echo "    perf      – performance improvement"
+  echo "    test      – add or fix tests"
+  echo "    build     – build system / dependency changes"
+  echo "    ci        – CI / hooks configuration"
+  echo "    chore     – maintenance (no src/test change)"
+  echo "    revert    – revert a previous commit"
+  echo ""
+  echo "  Examples:"
+  echo "    fix(reset): pre-write level.dat for random-seed worlds in restart mode"
+  echo "    feat(vote): add /resetvote cancel command for operators"
+  echo "    docs: update CHANGELOG.md for v1.3.0"
+  echo "    chore!: drop Java 11 support — minimum is now Java 17"
+  echo ""
+  exit 1
+fi
+
+# ── Description length guard ──────────────────────────────────────────────────
+DESC_LEN=${#FIRST_LINE}
+if (( DESC_LEN > 100 )); then
+  echo ""
+  echo -e "${RED}✖ Commit subject line is ${DESC_LEN} characters — maximum is 100.${NC}"
+  echo "  Shorten the first line and move detail into the body."
+  echo ""
+  exit 1
+fi
+
+# ── Breaking-change reminder ──────────────────────────────────────────────────
+if echo "$FIRST_LINE" | grep -Eq '!:'; then
+  echo ""
+  echo -e "${YEL}⚠ Breaking change detected (! in type).${NC}"
+  echo "  Make sure your commit body explains what breaks and how to migrate."
+  echo ""
+fi
+
+echo -e "${GRN}✔ Commit message format is valid.${NC}"
+exit 0

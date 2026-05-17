@@ -1,0 +1,258 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# WorldResetPlugin — Build & Release
+#
+# Trigger  : any push to `main` (the pre-push hook ensures VERSION is bumped
+#             before the push lands here).
+# Version  : read from the VERSION file in the repo root.
+# Release  : created only when no GitHub release exists for the current tag.
+#             The release body contains ONLY the changelog block that matches
+#             the version in VERSION — not the full CHANGELOG.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 2. Skip bot commits (prevents push-loop) ─────────────────────────
+      - name: Check if bot commit
+        id: bot
+        run: |
+          AUTHOR=$(git log -1 --pretty=format:'%an')
+          if [[ "$AUTHOR" == "github-actions[bot]" ]]; then
+            echo "skip=true"  >> "$GITHUB_OUTPUT"
+            echo "Bot commit detected — skipping release job."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 3. Read version from VERSION file ────────────────────────────────
+      - name: Read VERSION
+        if: steps.bot.outputs.skip == 'false'
+        id: ver
+        run: |
+          if [[ ! -f VERSION ]]; then
+            echo "::error::VERSION file not found in repo root."
+            exit 1
+          fi
+
+          VERSION=$(tr -d '[:space:]' < VERSION)
+
+          if [[ -z "$VERSION" ]]; then
+            echo "::error::VERSION file is empty."
+            exit 1
+          fi
+
+          # Basic semver guard: must look like  1.2.3  or  1.2.3-SNAPSHOT  etc.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::VERSION '$VERSION' does not look like a valid semver string."
+            exit 1
+          fi
+
+          echo "version=$VERSION"  >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"     >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      # ── 4. Verify CHANGELOG.md contains an entry for this version ────────
+      - name: Verify changelog entry exists
+        if: steps.bot.outputs.skip == 'false'
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+            echo "::error::No changelog section found for version $VERSION."
+            echo "Add a  ## [$VERSION]  block to CHANGELOG.md before releasing."
+            exit 1
+          fi
+          echo "Changelog entry for $VERSION confirmed."
+
+      # ── 5. Abort if this release tag already exists ───────────────────────
+      - name: Check for existing release
+        if: steps.bot.outputs.skip == 'false'
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          if gh release view "$TAG" &>/dev/null 2>&1; then
+            echo "exists=true"  >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No release for $TAG yet — proceeding."
+          fi
+
+      # ── 6. Extract ONLY this version's notes from CHANGELOG.md ───────────
+      #   Finds the  ## [VERSION]  block and copies everything up to (but not
+      #   including) the next  ---  separator.  The release page will show only
+      #   this version's changes, not the entire history.
+      - name: Extract changelog notes for ${{ steps.ver.outputs.version }}
+        if: |
+          steps.bot.outputs.skip    == 'false' &&
+          steps.check.outputs.exists == 'false'
+        run: |
+          python3 - "${{ steps.ver.outputs.version }}" <<'PYEOF'
+          import re, sys
+
+          version = sys.argv[1]
+
+          with open("CHANGELOG.md", encoding="utf-8") as f:
+              content = f.read()
+
+          # Match the block that starts with ## [VERSION] (any suffix after])
+          # and ends at the next horizontal rule (---) or end-of-file.
+          pattern = (
+              r"(?m)^## \["
+              + re.escape(version)
+              + r"\][^\n]*\n"        # header line
+              r"(.*?)"               # capture the body
+              r"(?=\n---|\Z)"        # stop at next --- or EOF
+          )
+          match = re.search(pattern, content, re.DOTALL)
+
+          if not match:
+              print(f"::error::Could not extract changelog notes for v{version}")
+              sys.exit(1)
+
+          notes = match.group(1).strip()
+
+          if not notes:
+              print(f"::warning::Changelog section for v{version} is empty.")
+              notes = f"Release {version}"
+
+          with open("/tmp/release_notes.md", "w", encoding="utf-8") as out:
+              out.write(notes)
+
+          print(f"Extracted {len(notes)} characters of release notes.")
+          PYEOF
+
+      # ── 7. Set up Java + Maven cache ─────────────────────────────────────
+      - name: Set up JDK 17
+        if: |
+          steps.bot.outputs.skip    == 'false' &&
+          steps.check.outputs.exists == 'false'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      # ── 8. Sync pom.xml version ───────────────────────────────────────────
+      - name: Sync pom.xml to ${{ steps.ver.outputs.version }}
+        if: |
+          steps.bot.outputs.skip    == 'false' &&
+          steps.check.outputs.exists == 'false'
+        run: |
+          mvn --batch-mode versions:set \
+            -DnewVersion="${{ steps.ver.outputs.version }}" \
+            -DgenerateBackupPoms=false
+          echo "pom.xml → $(grep -m1 '<version>' pom.xml | xargs)"
+
+      # ── 9. Sync plugin.yml version ────────────────────────────────────────
+      - name: Sync plugin.yml to ${{ steps.ver.outputs.version }}
+        if: |
+          steps.bot.outputs.skip    == 'false' &&
+          steps.check.outputs.exists == 'false'
+        run: |
+          PLUGIN_YML="src/main/resources/plugin.yml"
+          if [[ -f "$PLUGIN_YML" ]]; then
+            sed -i \
+              "s/^version:[[:space:]].*/version: '${{ steps.ver.outputs.version }}'/" \
+              "$PLUGIN_YML"
+            echo "plugin.yml → $(grep '^version:' "$PLUGIN_YML")"
+          else
+            echo "::warning::plugin.yml not found at $PLUGIN_YML"
+          fi
+
+      # ── 10. Build ──────────────────────────────────────────────────────────
+      - name: Build JAR
+        if: |
+          steps.bot.outputs.skip    == 'false' &&
+          steps.check.outputs.exists == 'false'
+        run: |
+          mvn --batch-mode clean package -DskipTests
+          echo "Build output:"
+          ls -lh target/*.jar
+
+      # ── 11. Commit version files ───────────────────────────────────────────
+      - name: Commit version-synced files
+        if: |
+          steps.bot.outputs.skip    == 'false' &&
+          steps.check.outputs.exists == 'false'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add pom.xml
+          [[ -f src/main/resources/plugin.yml ]] && \
+            git add src/main/resources/plugin.yml
+
+          if git diff --staged --quiet; then
+            echo "All version files already up to date."
+          else
+            git commit -m "chore(release): sync version files to ${{ steps.ver.outputs.version }} [skip ci]"
+            git push
+          fi
+
+      # ── 12. Resolve JAR to attach ─────────────────────────────────────────
+      - name: Resolve release JAR
+        if: |
+          steps.bot.outputs.skip    == 'false' &&
+          steps.check.outputs.exists == 'false'
+        id: jar
+        run: |
+          # Exclude *-original.jar produced by the Maven shade plugin
+          JARS=()
+          for f in target/*.jar; do
+            [[ "$f" != *-original.jar ]] && JARS+=("$f")
+          done
+
+          COUNT=${#JARS[@]}
+          if [[ $COUNT -eq 0 ]]; then
+            echo "::error::No JAR found in target/ — build may have failed."
+            exit 1
+          fi
+
+          # If multiple, prefer the one whose basename ends with the version
+          VER="${{ steps.ver.outputs.version }}"
+          JAR="${JARS[0]}"
+          for f in "${JARS[@]}"; do
+            [[ "$(basename "$f" .jar)" == *"$VER" ]] && JAR="$f"
+          done
+
+          echo "jar=$JAR" >> "$GITHUB_OUTPUT"
+          echo "Selected: $JAR"
+
+      # ── 13. Create GitHub Release ─────────────────────────────────────────
+      - name: Create release ${{ steps.ver.outputs.tag }}
+        if: |
+          steps.bot.outputs.skip    == 'false' &&
+          steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --title "WorldResetPlugin ${{ steps.ver.outputs.tag }}" \
+            --notes-file /tmp/release_notes.md \
+            "${{ steps.jar.outputs.jar }}"
+
+          echo "✓ Release ${{ steps.ver.outputs.tag }} published."

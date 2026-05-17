@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# =============================================================================
+# .githooks/pre-push
+#
+# Runs after  git push  is invoked but before any data is sent to the remote.
+# Failing (exit non-zero) cancels the push entirely.
+#
+# Checks performed
+# ────────────────
+#   1.  VERSION file exists and is a valid semver string
+#   2.  VERSION matches the top-most  ## [x.y.z]  entry in CHANGELOG.md
+#   3.  VERSION has actually changed relative to the remote main branch
+#       (prevents pushing without bumping the version)
+#   4.  pom.xml <version> matches VERSION
+#   5.  plugin.yml version: matches VERSION
+#   6.  No snapshot / pre-release suffix on VERSION when pushing to main
+#       (e.g. 1.3.0-SNAPSHOT is blocked on main; allowed on other branches)
+#   7.  The JAR can be built cleanly (Maven compile — fast, no package)
+# =============================================================================
+
+set -euo pipefail
+
+RED='\033[0;31m'
+YEL='\033[0;33m'
+GRN='\033[0;32m'
+BLU='\033[0;34m'
+NC='\033[0m'
+
+PASS="${GRN}✔${NC}"
+WARN="${YEL}⚠${NC}"
+FAIL="${RED}✖${NC}"
+
+errors=0
+warnings=0
+
+err()  { echo -e "${FAIL} ${RED}$*${NC}";  errors=$(( errors + 1 )); }
+warn() { echo -e "${WARN} ${YEL}$*${NC}";  warnings=$(( warnings + 1 )); }
+ok()   { echo -e "${PASS} $*"; }
+info() { echo -e "${BLU}▸${NC} $*"; }
+
+# stdin contains lines: <local-ref> <local-sha> <remote-ref> <remote-sha>
+# We capture them to know the target branch and the remote HEAD.
+REMOTE="$1"
+REMOTE_URL="$2"
+
+PUSH_TO_MAIN=false
+while IFS=' ' read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  if [[ "$REMOTE_REF" == "refs/heads/main" || "$REMOTE_REF" == "refs/heads/master" ]]; then
+    PUSH_TO_MAIN=true
+  fi
+done
+
+echo ""
+echo -e "${BLU}┌─ pre-push checks ──────────────────────────────────────────────┐${NC}"
+
+# ── 1. VERSION file exists and is valid semver ───────────────────────────────
+info "Reading VERSION file…"
+if [[ ! -f VERSION ]]; then
+  err "VERSION file not found in repo root."
+  echo -e "${FAIL} ${RED}Push aborted — fix errors above.${NC}"
+  exit 1
+fi
+
+VERSION=$(tr -d '[:space:]' < VERSION)
+
+if [[ -z "$VERSION" ]]; then
+  err "VERSION file is empty."
+  echo -e "${FAIL} ${RED}Push aborted.${NC}"
+  exit 1
+fi
+
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?$ ]]; then
+  err "VERSION '$VERSION' is not a valid semver string (expected e.g. 1.3.0)."
+  echo -e "${FAIL} ${RED}Push aborted.${NC}"
+  exit 1
+fi
+
+ok "VERSION = $VERSION"
+
+# ── 6. No SNAPSHOT on main ───────────────────────────────────────────────────
+if $PUSH_TO_MAIN && [[ "$VERSION" =~ -SNAPSHOT ]]; then
+  err "SNAPSHOT version ($VERSION) cannot be pushed to main — release a stable version first."
+fi
+
+# ── 2. VERSION matches top CHANGELOG.md entry ────────────────────────────────
+info "Verifying VERSION matches CHANGELOG.md…"
+CHANGELOG_TOP=$(grep -m1 '^## \[' CHANGELOG.md 2>/dev/null \
+  | sed 's/^## \[\([^]]*\)\].*/\1/' || true)
+
+if [[ -z "$CHANGELOG_TOP" ]]; then
+  err "Could not read a version from CHANGELOG.md."
+elif [[ "$CHANGELOG_TOP" != "$VERSION" ]]; then
+  err "VERSION ($VERSION) does not match the top CHANGELOG.md entry (## [$CHANGELOG_TOP])."
+  echo "     Update VERSION to match, or add a ## [$VERSION] block to CHANGELOG.md."
+else
+  ok "VERSION matches CHANGELOG.md (## [$CHANGELOG_TOP])"
+fi
+
+# ── 3. VERSION changed relative to remote main ───────────────────────────────
+if $PUSH_TO_MAIN; then
+  info "Checking VERSION changed since last push to main…"
+  REMOTE_VERSION=$(git show "origin/main:VERSION" 2>/dev/null | tr -d '[:space:]' || true)
+
+  if [[ -z "$REMOTE_VERSION" ]]; then
+    ok "No VERSION on remote yet — first push, proceeding."
+  elif [[ "$REMOTE_VERSION" == "$VERSION" ]]; then
+    err "VERSION is still $VERSION — same as origin/main."
+    echo "     Bump VERSION (and update CHANGELOG.md, pom.xml, plugin.yml) before pushing."
+  else
+    ok "VERSION bumped: $REMOTE_VERSION → $VERSION"
+  fi
+fi
+
+# ── 4. pom.xml version matches VERSION ───────────────────────────────────────
+info "Checking pom.xml version…"
+POM_VER=$(grep -m1 '<version>' pom.xml 2>/dev/null \
+  | sed 's/.*<version>\(.*\)<\/version>.*/\1/' \
+  | tr -d '[:space:]' || true)
+
+if [[ -z "$POM_VER" ]]; then
+  warn "Could not read version from pom.xml."
+elif [[ "$POM_VER" != "$VERSION" ]]; then
+  err "pom.xml version ($POM_VER) does not match VERSION ($VERSION)."
+  echo "     Fix:  mvn versions:set -DnewVersion=$VERSION -DgenerateBackupPoms=false"
+else
+  ok "pom.xml = $POM_VER"
+fi
+
+# ── 5. plugin.yml version matches VERSION ────────────────────────────────────
+info "Checking plugin.yml version…"
+PLUGIN_YML="src/main/resources/plugin.yml"
+if [[ -f "$PLUGIN_YML" ]]; then
+  PLUGIN_VER=$(grep '^version:' "$PLUGIN_YML" \
+    | sed "s/^version:[[:space:]]*//" \
+    | tr -d "'\"\n[:space:]" || true)
+
+  if [[ -z "$PLUGIN_VER" ]]; then
+    warn "Could not read version from $PLUGIN_YML."
+  elif [[ "$PLUGIN_VER" != "$VERSION" ]]; then
+    err "plugin.yml version ($PLUGIN_VER) does not match VERSION ($VERSION)."
+    echo "     Fix:  sed -i \"s/^version:.*/version: '$VERSION'/\" $PLUGIN_YML"
+  else
+    ok "plugin.yml = $PLUGIN_VER"
+  fi
+else
+  warn "$PLUGIN_YML not found — skipping."
+fi
+
+# ── 7. Maven compile check (quick — no packaging) ────────────────────────────
+info "Running Maven compile check…"
+if command -v mvn &>/dev/null; then
+  if mvn --batch-mode compile -q 2>/tmp/mvn_push_err; then
+    ok "Maven compile succeeded."
+  else
+    err "Maven compile failed — fix build errors before pushing."
+    echo ""
+    tail -20 /tmp/mvn_push_err | sed 's/^/     /'
+  fi
+else
+  warn "mvn not found on PATH — skipping compile check."
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+echo -e "${BLU}└────────────────────────────────────────────────────────────────┘${NC}"
+echo ""
+
+if (( errors > 0 )); then
+  echo -e "${FAIL} ${RED}Pre-push failed: $errors error(s).${NC}  Push cancelled."
+  echo ""
+  exit 1
+fi
+
+if (( warnings > 0 )); then
+  echo -e "${WARN} ${YEL}Pre-push passed with $warnings warning(s).${NC}"
+else
+  echo -e "${PASS} ${GRN}All pre-push checks passed.${NC}"
+fi
+echo ""
+exit 0
