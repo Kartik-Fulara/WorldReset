@@ -275,14 +275,15 @@ public class ResetManager {
         ConfigManager cfg = plugin.getConfigManager();
         log.info("=== WorldReset executing ===");
 
-        // ── Discord: send START notification immediately (async, non-blocking) ─
+        // ── Discord: send START notification synchronously so it is guaranteed
+        //    to arrive at Discord before the COMPLETE notification that follows.
+        //    Players have already been kicked at this point so a brief HTTP
+        //    block (~5s timeout) on the main thread is acceptable.
         {
             String webhookUrl = cfg.getDiscordWebhookUrl();
             if (webhookUrl != null && !webhookUrl.isEmpty()) {
-                final String url = webhookUrl;
-                final String msg = buildDiscordMessage(cfg.getDiscordStartTemplate(), false, 0);
-                Bukkit.getScheduler().runTaskAsynchronously(plugin,
-                        () -> sendDiscordWebhook(url, msg));
+                sendDiscordWebhook(webhookUrl,
+                        buildDiscordMessage(cfg.getDiscordStartTemplate(), false, 0));
             }
         }
 
@@ -448,14 +449,14 @@ public class ResetManager {
                         cfg.getWorldsToReset(), durationSecs);
                 lastResetCompleteMs = System.currentTimeMillis();
 
-                // Discord complete notification (async — non-blocking)
+                // Discord complete notification — sent synchronously so it is
+                // never dropped if the server is reloading or shutting down.
+                // mainContinue runs on the main thread so this is consistent
+                // with how the restart path sends its COMPLETE notification.
                 String webhookUrl = cfg.getDiscordWebhookUrl();
                 if (webhookUrl != null && !webhookUrl.isEmpty()) {
-                    final String finalUrl = webhookUrl;
-                    final String finalMsg = buildDiscordMessage(
-                            cfg.getDiscordCompleteTemplate(), true, durationSecs);
-                    Bukkit.getScheduler().runTaskAsynchronously(plugin,
-                            () -> sendDiscordWebhook(finalUrl, finalMsg));
+                    sendDiscordWebhook(webhookUrl,
+                            buildDiscordMessage(cfg.getDiscordCompleteTemplate(), true, durationSecs));
                 }
 
                 log.info("=== WorldReset complete ===");
@@ -1131,7 +1132,7 @@ public class ResetManager {
             worldsDetail.append(w).append(" [").append(env).append("]")
                         .append(" seed=").append(seedStr);
             if (hardcore) worldsDetail.append(" ☠HARDCORE");
-            worldsDetail.append("\\n");
+            worldsDetail.append("\n");   // real newline — escapeJson() converts it to \\n in JSON
         }
 
         // {mode}

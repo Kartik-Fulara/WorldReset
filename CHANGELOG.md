@@ -7,7 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.3.0] — Current
+## [1.3.1] — Current
+
+### Fixed
+- **Discord START notification arrives after COMPLETE** (`ResetManager` — `executeReset()`, line 284) — The START webhook was dispatched with `runTaskAsynchronously`, placing it in a thread-pool queue. COMPLETE fired synchronously on the main thread immediately after and won the race, so Discord showed messages in reverse order. START is now sent synchronously (blocking HTTP). This is acceptable because it is called exactly once, at the moment of reset confirmation, after players have already been kicked.
+- **Discord COMPLETE notification never sent in live-regeneration mode** (`ResetManager` — `mainContinue`, line 457) — COMPLETE was re-dispatched with `runTaskAsynchronously` from a task that was already running on the main thread (scheduled back via `runTask`). Async Bukkit tasks can be silently dropped during plugin reloads or server shutdown sequences. COMPLETE is now sent synchronously, matching the behaviour of the restart path.
+- **`\n` rendered as literal text in Discord world-detail lines** (`ResetManager` — `buildDiscordMessage()`, line 1134) — `worldsDetail.append("\\n")` appended the two characters `\` and `n`. This embedded the literal string `\n` in the JSON payload, which Discord displayed as plain text rather than a line break. The fix appends `"\n"` (the real newline character); `escapeJson()` then converts it to `\\n` in the JSON body, which Discord correctly interprets as a line break.
+
+---
+
+## [1.3.0]
 
 ### Added
 - **Rich Discord message templates** (`config.yml` — `notifications.discord-start-template` / `discord-complete-template`) — Both Discord messages are now driven by fully customisable YAML templates. Fifteen placeholders are available: `{server}`, `{initiator}`, `{worlds}`, `{worlds_detail}`, `{mode}`, `{time}`, `{gamerules}`, `{difficulty}`, `{seeds}`, `{extra_paths}`, `{voter_list}`, `{vote_result}`, `{player_data}`, `{backup}`, and `{duration}` (complete message only). Templates can be written as multi-line YAML block scalars (`|`) or single-line strings with `\n`. Edit in `config.yml` and reload with `/worldreset reload` — no server restart required.
