@@ -1,15 +1,24 @@
 # WorldResetPlugin — Discord Template Guide
-> v1.4.1 — standard property commands, enhanced notifications, level.dat fix
+> v1.4.4 — standard property commands, priority logic, enhanced notifications
 
 ---
 
-## What changed in 1.4.1
+## What changed in 1.4.4
+
+| # | Change | Where | Status |
+|---|--------|-------|--------|
+| 1 | **Pre-Generation Patching** — `server.properties` patches are now written *before* worlds are created in all modes | `ResetManager.java` | ✅ Fixed |
+| 2 | **Patch Priority** — `serverprops` patches now correctly override dedicated config settings for difficulty, hardcore, and seeds | `ResetManager.java` | ✅ Fixed |
+
+---
+
+## What changed in 1.4.1 -- 1.4.3
 
 | # | Change | Where | Status |
 |---|--------|-------|--------|
 | 1 | **Enhanced `{server_props}`** — now automatically includes per-world settings (hardcore, environment, seeds) when configured | `ResetManager.java` | ✅ Enhanced |
 | 2 | **Standard Property Subcommands** — run `/worldreset props <key> <value>` directly for all 54 properties | `ResetCommand.java` | ✅ Added |
-| 3 | **Improved `level.dat` Pre-writing** — added `version`, `LevelName`, and `Initialized` fields for better compatibility | `ResetManager.java` | ✅ Fixed |
+| 3 | **Legacy `level.dat` Pre-writing** — reverted to DataVersion 2230 for Paper 1.21 compatibility while guaranteeing seeds | `ResetManager.java` | ✅ Fixed |
 | 4 | **Difficulty standardization** — difficulty storage is now lowercase and lookup is case-insensitive | `ConfigManager.java` | ✅ Fixed |
 
 ---
@@ -38,7 +47,7 @@ Reset starts (countdown fires OR instant reset)
 
 Reset executes
     │
-    ├── [live-regeneration mode] worlds regenerate on main thread
+    ├── [live-regeneration mode] server.properties patched → worlds regenerate on main thread
     │       └─► (no complete message — startup template handles it on next boot)
     │
     └── [restart mode] server.properties patched → level.dat pre-written
@@ -126,7 +135,7 @@ Sent immediately when a reset is confirmed (at the start of the countdown or on 
 | `{player_data}` | Player data cleared on reset | `inventory, XP, health, hunger` or `disabled` |
 | `{extra_paths}` | Extra paths deleted on reset | `logs, playerdata, advancements, stats` |
 | `{preserve_paths}` | Paths kept across the reset | `config/mydata` or `(none)` |
-| `{server_props}` | server.properties patches applied | `difficulty=hard, pvp=true` |
+| `{server_props}` | server.properties patches applied | `difficulty=hard, pvp=true, seed.world=12345` |
 | `{pre_commands}` | Commands run before the reset | `say Resetting!` or `(none)` |
 | `{post_commands}` | Commands run after the reset | `say Done!` or `(none)` |
 | `{whitelist}` | Whitelist behaviour during reset | `enabled during reset` or `disabled` |
@@ -255,7 +264,7 @@ world_the_end (THE_END | seed: random | hardcore: no)
 ─────────────────────────────
 ⚙️ Settings applied after reset:
 📋 Gamerules: naturalRegeneration=false, keepInventory=false
-💀 Difficulty: HARD
+💀 Difficulty: hard
 ☠ Hardcore: world: no, world_nether: no, world_the_end: no
 🗺️ World border: enabled, size: 1000.0, center: 0,0
 📍 Spawn: enabled, world, 0/64/0
@@ -265,7 +274,7 @@ world_the_end (THE_END | seed: random | hardcore: no)
 📁 Extra paths deleted: logs, playerdata, advancements, stats
 🔒 Preserved paths: (none)
 ─────────────────────────────
-🛠️ server.properties patches: difficulty=hard, pvp=true
+🛠️ server.properties patches: difficulty=hard, pvp=true, seed.world=123456789
 ▶ Pre-reset commands: (none)
 ◀ Post-reset commands: (none)
 💾 Backup: enabled (keep 5)  |  🔐 Whitelist: disabled
