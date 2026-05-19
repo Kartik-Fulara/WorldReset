@@ -330,4 +330,4 @@ Pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the cod
 
 ## Licence
 
-[MIT](LICENCE)
+[MIT](LICENSE)
