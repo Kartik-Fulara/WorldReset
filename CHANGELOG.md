@@ -7,10 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.4.2] — Current
+## [1.4.3] — Current
 
 ### Fixed
-- **Missing `DataVersion` in pre-written `level.dat`** (`ResetManager` — `writeSeedToLevelDat()`) — Modern Paper (1.21+) requires a valid `DataVersion` field in the NBT Data compound; without it, the server would fail to load the world with an `Unknown data version: 0` error. Added `DataVersion: 3953` (1.21) to the pre-written NBT.
+- **`IllegalStateException: No key dimensions` in Paper 1.21** (`ResetManager` — `writeSeedToLevelDat()`) — Modern Paper uses strict codecs for the `WorldGenSettings` compound in `level.dat`. My previous attempt to write a minimal 1.21-style NBT was missing the mandatory `dimensions` field, causing the server to crash on startup. The fix reverts to a legacy 1.15.2-style structure (`DataVersion: 2230`) and removes the `WorldGenSettings` compound. Paper will read the legacy `RandomSeed` field and perform a clean upgrade to the modern format automatically, preserving the seed without crashing.
+
+---
+
+## [1.4.2] — 2026-05-19
+
+### Fixed
+- **Missing `DataVersion` in pre-written `level.dat`** (`ResetManager` — `writeSeedToLevelDat()`) — Modern Paper (1.21+) requires a valid `DataVersion` field in the NBT Data compound; without it, the server would fail to load the world with an `Unknown data version: 0` error. Added `DataVersion: 3953` (1.21) to the pre-written NBT. *(Superseded by the more robust fix in 1.4.3)*.
 - **Missing `api-version` in `plugin.yml`** — Added `api-version: '1.21'` to resolve the legacy plugin warning in modern Paper/Spigot versions.
 - **Missing seeds in Nether and End worlds after reset** (`ResetManager` — `writeSeedToLevelDat()`) — Nether and End worlds sometimes loaded with a zero seed or failed to allow player joins after a reset because the pre-written `level.dat` was too minimal. The fix adds essential NBT fields (`version`, `LevelName`, `Initialized`) to the pre-written `level.dat` to ensure Paper/Spigot recognizes it as a valid initialized world.
 - **Seeds not applied for random-seed worlds in live-regeneration mode** (`ResetManager` — `regenerateWorlds()`) — In live-regeneration mode (`use-restart: false`), random seeds were applied via `WorldCreator.seed()` but the `level.dat` was not being pre-overwritten. On Windows, if the old `level.dat` could not be deleted due to a file lock, Bukkit would reuse the old seed. `writeSeedToLevelDat()` is now called for *every* world in live-regeneration mode (both locked and random) to guarantee the new seed is applied.

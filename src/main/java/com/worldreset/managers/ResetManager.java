@@ -1495,18 +1495,19 @@ public class ResetManager {
             writeNbtCompound(dos, "", () -> {
                 // "Data" compound
                 writeNbtCompound(dos, "Data", () -> {
-                    writeNbtInt(dos, "DataVersion", 3953); // 1.21
+                    // Use a legacy DataVersion (2230 = 1.15.2) to ensure Paper
+                    // performs a clean upgrade. If we use a modern version (1.16+)
+                    // but don't provide the complex WorldGenSettings structure,
+                    // Paper's codecs will throw an IllegalStateException.
+                    writeNbtInt(dos, "DataVersion", 2230);
                     writeNbtInt(dos, "version", 19133);
                     writeNbtString(dos, "LevelName", worldName);
                     writeNbtByte(dos, "Initialized", (byte) 1);
 
-                    // Legacy seed field (Spigot pre-1.16)
+                    // Legacy seed field (Spigot pre-1.16, honored by Paper as a fallback/upgrade)
                     writeNbtLong(dos, "RandomSeed", seed);
                     // Hardcore flag — Paper/Spigot reads this from level.dat on world load
                     writeNbtByte(dos, "hardcore", (byte) (hardcore ? 1 : 0));
-                    // Modern seed field (Paper/Spigot 1.16+)
-                    writeNbtCompound(dos, "WorldGenSettings", () ->
-                            writeNbtLong(dos, "seed", seed));
                 });
             });
 
