@@ -1,5 +1,5 @@
 name: WorldResetPlugin
-version: '1.4.3'
+version: '1.4.4'
 api-version: '1.21'
 main: com.worldreset.WorldResetPlugin
 author: WorldResetPlugin

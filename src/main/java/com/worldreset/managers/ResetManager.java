@@ -349,12 +349,13 @@ public class ResetManager {
         // ── Phase 3 (MAIN): regenerate / restart + post-steps ──────────────
 
         Runnable mainContinue = () -> {
-            if (cfg.isUseRestart()) {
-                // Patch server.properties before the process exits
-                if (cfg.isServerPropertiesEnabled()) {
-                    writeServerProperties();
-                }
+            // Patch server.properties before world generation or restart.
+            // User requested that serverprops patches be written "pre world generation".
+            if (cfg.isServerPropertiesEnabled()) {
+                writeServerProperties();
+            }
 
+            if (cfg.isUseRestart()) {
                 // Pre-write level.dat for EVERY world before the restart.
                 //
                 // Why this is required for ALL worlds (locked AND random):
@@ -372,9 +373,26 @@ public class ResetManager {
                 //     • Locked  → same seed every reset, forever (until the operator
                 //                 unlocks it via /worldreset seed <world> random).
                 //     • Random  → brand-new seed each reset, independent per world.
+                Map<String, String> patches = cfg.getServerPropertiesValues();
                 for (String wn : cfg.getWorldsToReset()) {
                     Long lockedSeed = cfg.getSeedForWorld(wn);
-                    boolean hc      = cfg.isHardcoreForWorld(wn);
+
+                    // Priority 1: server.properties patches (level-seed)
+                    if (cfg.isServerPropertiesEnabled() && patches.containsKey("level-seed")) {
+                        String patchSeed = patches.get("level-seed");
+                        try {
+                            lockedSeed = Long.parseLong(patchSeed);
+                        } catch (NumberFormatException e) {
+                            log.warning("Invalid level-seed patch '" + patchSeed + "' — using config seed.");
+                        }
+                    }
+
+                    boolean hc = cfg.isHardcoreForWorld(wn);
+                    // Priority 1: server.properties patches (hardcore)
+                    if (cfg.isServerPropertiesEnabled() && patches.containsKey("hardcore")) {
+                        hc = Boolean.parseBoolean(patches.get("hardcore"));
+                    }
+
                     if (lockedSeed != null) {
                         // Locked world — always use the stored seed.
                         writeSeedToLevelDat(wn, lockedSeed, hc);
@@ -879,6 +897,10 @@ public class ResetManager {
 
             // ── Hardcore ───────────────────────────────────────────────────
             boolean hardcore = cfg.isHardcoreForWorld(worldName);
+            Map<String, String> patches = cfg.getServerPropertiesValues();
+            if (cfg.isServerPropertiesEnabled() && patches.containsKey("hardcore")) {
+                hardcore = Boolean.parseBoolean(patches.get("hardcore"));
+            }
 
             // ── WorldCreator ───────────────────────────────────────────────
             WorldCreator creator = new WorldCreator(worldName)
@@ -894,6 +916,17 @@ public class ResetManager {
 
             // ── Seed ───────────────────────────────────────────────────────
             Long lockedSeed = cfg.getSeedForWorld(worldName);
+
+            // Priority 1: server.properties patches (level-seed)
+            if (cfg.isServerPropertiesEnabled() && patches.containsKey("level-seed")) {
+                String patchSeed = patches.get("level-seed");
+                try {
+                    lockedSeed = Long.parseLong(patchSeed);
+                } catch (NumberFormatException e) {
+                    log.warning("Invalid level-seed patch '" + patchSeed + "' — using config seed.");
+                }
+            }
+
             long finalSeed;
             if (lockedSeed != null) {
                 finalSeed = lockedSeed;
@@ -949,12 +982,20 @@ public class ResetManager {
      */
     public void applyGamerulesAndDifficulty() {
         ConfigManager cfg = plugin.getConfigManager();
+        Map<String, String> patches = cfg.getServerPropertiesValues();
 
         Difficulty difficulty;
+        String diffStr = cfg.getDifficulty();
+
+        // Priority 1: server.properties patches
+        if (cfg.isServerPropertiesEnabled() && patches.containsKey("difficulty")) {
+            diffStr = patches.get("difficulty");
+        }
+
         try {
-            difficulty = Difficulty.valueOf(cfg.getDifficulty().toUpperCase());
+            difficulty = Difficulty.valueOf(diffStr.toUpperCase());
         } catch (IllegalArgumentException e) {
-            log.warning("Invalid difficulty '" + cfg.getDifficulty() + "', defaulting to HARD.");
+            log.warning("Invalid difficulty '" + diffStr + "', defaulting to HARD.");
             difficulty = Difficulty.HARD;
         }
 
@@ -967,8 +1008,13 @@ public class ResetManager {
             world.setDifficulty(difficulty);
 
             // Hardcore flag on the live world (Bukkit 1.16+)
+            boolean hardcore = cfg.isHardcoreForWorld(worldName);
+            if (cfg.isServerPropertiesEnabled() && patches.containsKey("hardcore")) {
+                hardcore = Boolean.parseBoolean(patches.get("hardcore"));
+            }
+
             try {
-                world.setHardcore(cfg.isHardcoreForWorld(worldName));
+                world.setHardcore(hardcore);
             } catch (NoSuchMethodError ignored) {
                 // < 1.16 — WorldCreator already set it in level.dat
             }
