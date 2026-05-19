@@ -1,5 +1,16 @@
 # WorldResetPlugin — Discord Template Guide
-> v1.4.0 — startup notification, expanded start template, complete template retired
+> v1.4.1 — standard property commands, enhanced notifications, level.dat fix
+
+---
+
+## What changed in 1.4.1
+
+| # | Change | Where | Status |
+|---|--------|-------|--------|
+| 1 | **Enhanced `{server_props}`** — now automatically includes per-world settings (hardcore, environment, seeds) when configured | `ResetManager.java` | ✅ Enhanced |
+| 2 | **Standard Property Subcommands** — run `/worldreset props <key> <value>` directly for all 54 properties | `ResetCommand.java` | ✅ Added |
+| 3 | **Improved `level.dat` Pre-writing** — added `version`, `LevelName`, and `Initialized` fields for better compatibility | `ResetManager.java` | ✅ Fixed |
+| 4 | **Difficulty standardization** — difficulty storage is now lowercase and lookup is case-insensitive | `ConfigManager.java` | ✅ Fixed |
 
 ---
 

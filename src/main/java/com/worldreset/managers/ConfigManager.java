@@ -316,11 +316,11 @@ public class ConfigManager {
     // ── Difficulty ─────────────────────────────────────────────────────────
 
     public String getDifficulty() {
-        return cfg().getString("difficulty", "HARD").toUpperCase();
+        return cfg().getString("difficulty", "HARD").toLowerCase();
     }
 
     public void setDifficulty(String diff) {
-        cfg().set("difficulty", diff.toUpperCase());
+        cfg().set("difficulty", diff.toLowerCase());
         save();
     }
 

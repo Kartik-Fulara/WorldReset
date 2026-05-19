@@ -1,5 +1,5 @@
 name: WorldResetPlugin
-version: '1.4.0'
+version: '1.4.1'
 main: com.worldreset.WorldResetPlugin
 author: WorldResetPlugin
 description: Full world reset with configurable gamerules, worlds, schedule, backups, and server-properties patching

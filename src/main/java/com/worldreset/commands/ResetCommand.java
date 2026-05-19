@@ -26,11 +26,8 @@ import java.util.*;
  *         safety check entirely. Now it validates that a pending entry exists
  *         and hasn't expired before proceeding.
  *
- *  FIX-D  handleGamerule: "hardcore" intercepted as a synthetic gamerule.
- *         /worldreset gamerule hardcore true|false sets hardcore for ALL worlds
- *         in the reset list via cfg.setHardcoreForWorld(). It is displayed at
- *         the top of the gamerule list. /worldreset gamerule remove hardcore
- *         resets all worlds to hardcore=false.
+ *  FIX-D  handleGamerule: "hardcore" removed as a synthetic gamerule.
+ *         Use /worldreset hardcore instead.
  *
  *  NEW    handleProps — /worldreset props (alias: p, prop)
  *         A completely separate sub-command covering ALL 54 standard Minecraft
@@ -686,32 +683,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
             sender.sendMessage(header("Gamerules Applied After Reset"));
 
-            // ── Synthetic "hardcore" row ───────────────────────────────────
-            // hardcore is a world flag (not a real gamerule), but we expose it here
-            // because admins expect to find it alongside gamerules.
-            List<String> worldsList = cfg.getWorldsToReset();
-            if (!worldsList.isEmpty()) {
-                boolean firstHc = cfg.isHardcoreForWorld(worldsList.get(0));
-                boolean allSame = true;
-                for (String w : worldsList) {
-                    if (cfg.isHardcoreForWorld(w) != firstHc) { allSame = false; break; }
-                }
-                String hcDisplay = allSame
-                        ? (firstHc ? red("true") : green("false"))
-                        : yellow("mixed");
-                String hcLabel = "  §bhardcore §7= " + hcDisplay
-                        + gray("  (world flag — applies to all worlds)");
-                TextComponent hcLine = new TextComponent(hcLabel);
-                TextComponent hcEditBtn = new TextComponent(" §8[§eEdit§8]");
-                hcEditBtn.setClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND,
-                        "/worldreset gamerule hardcore "));
-                hcEditBtn.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                        new Text("§7Set hardcore for all worlds\n§7true = players banned on death")));
-                hcLine.addExtra(hcEditBtn);
-                sendComponent(sender, new BaseComponent[]{hcLine},
-                        hcLabel + "  [Edit: /worldreset gamerule hardcore true|false]");
-            }
-
             Map<String, String> rules = cfg.getGamerules();
             if (rules.isEmpty()) {
                 sender.sendMessage(yellow("  (no gamerules configured — vanilla defaults will apply)"));
@@ -742,50 +713,8 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        // ── Intercept "hardcore" before normal GameRule lookup ─────────────
-        if (args[1].equalsIgnoreCase("hardcore")) {
-            if (args.length < 3) {
-                // Show current per-world status and usage hint
-                msg(sender, red("Usage: /worldreset gamerule hardcore <true|false>"));
-                msg(sender, gray("  Sets hardcore on ALL worlds in the reset list."));
-                for (String wn : cfg.getWorldsToReset()) {
-                    boolean cur = cfg.isHardcoreForWorld(wn);
-                    msg(sender, "  " + gold("▸ " + wn) + " §7= " + (cur ? red("true") : green("false")));
-                }
-                return;
-            }
-            String valStr = args[2].toLowerCase();
-            if (!valStr.equals("true") && !valStr.equals("false")) {
-                msg(sender, red("hardcore must be 'true' or 'false'."));
-                return;
-            }
-            boolean hcVal = Boolean.parseBoolean(valStr);
-            List<String> worldsForHc = cfg.getWorldsToReset();
-            if (worldsForHc.isEmpty()) {
-                msg(sender, yellow("No worlds configured — nothing to set hardcore on."));
-                return;
-            }
-            for (String wn : worldsForHc) {
-                cfg.setHardcoreForWorld(wn, hcVal);
-            }
-            msg(sender, green("hardcore = " + valStr + " applied to "
-                    + worldsForHc.size() + " world(s). Takes effect after next reset."));
-            if (hcVal) {
-                msg(sender, yellow("  ⚠ Hardcore mode: players are permanently banned on death."));
-            }
-            return;
-        }
-
         if (args[1].equalsIgnoreCase("remove")) {
             if (args.length < 3) { msg(sender, red("Usage: /worldreset gamerule remove <rule>")); return; }
-            // Intercept "hardcore" remove — reset to false for all worlds
-            if (args[2].equalsIgnoreCase("hardcore")) {
-                for (String wn : cfg.getWorldsToReset()) {
-                    cfg.setHardcoreForWorld(wn, false);
-                }
-                msg(sender, green("hardcore reset to false for all worlds."));
-                return;
-            }
             if (cfg.removeGamerule(args[2])) msg(sender, green("Removed gamerule: " + args[2]));
             else msg(sender, yellow("Gamerule '" + args[2] + "' was not in the list."));
             return;
@@ -1277,6 +1206,16 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             default: {
                 // /worldreset props <key> [value]
                 String key = args[1];
+
+                // Check if the "sub" is actually a known property key
+                if (ALL_SERVER_PROP_KEYS.contains(key.toLowerCase())) {
+                    key = key.toLowerCase(); // canonical
+                } else {
+                    // Not a subcommand and not a standard key
+                    msg(sender, red("Unknown subcommand or property key: " + key));
+                    return;
+                }
+
                 if (args.length < 3) {
                     showSingleProp(sender, cfg, spm, key);
                 } else {
@@ -1487,8 +1426,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
 
             case 3:
                 sender.sendMessage(section("Gamerules  (/worldreset gamerule)"));
-                help(sender, "/worldreset gamerule",                 "Show all gamerules + hardcore flag applied after reset.");
-                help(sender, "/worldreset gamerule hardcore <true|false>", "Set hardcore for ALL worlds (special synthetic gamerule).");
+                help(sender, "/worldreset gamerule",                 "Show all gamerules applied after reset.");
                 help(sender, "/worldreset gamerule <rule> <value>",  "Set a gamerule (e.g. keepInventory false).");
                 help(sender, "/worldreset gamerule remove <rule>",   "Remove a gamerule from the list.");
 
@@ -1635,7 +1573,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     break;
                 case "gamerule":
                     result.add("remove");
-                    result.add("hardcore");       // synthetic gamerule
                     result.addAll(cfg.getGamerules().keySet());
                     break;
                 case "schedule":
@@ -1676,10 +1613,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     break;
                 case "gamerule":
                     if (args[1].equalsIgnoreCase("remove")) {
-                        result.add("hardcore");
                         result.addAll(cfg.getGamerules().keySet());
-                    } else if (args[1].equalsIgnoreCase("hardcore")) {
-                        result.addAll(Arrays.asList("true","false"));
                     } else {
                         result.addAll(Arrays.asList("true","false"));
                     }

@@ -894,22 +894,22 @@ public class ResetManager {
 
             // ── Seed ───────────────────────────────────────────────────────
             Long lockedSeed = cfg.getSeedForWorld(worldName);
+            long finalSeed;
             if (lockedSeed != null) {
-                creator.seed(lockedSeed);
-                // Pre-write level.dat with the locked seed so Paper always reads
-                // our value even if level.dat deletion above was incomplete.
-                // This mirrors what the restart path does and is the reliable
-                // way to guarantee the seed — WorldCreator.seed() alone can be
-                // overridden by a stale level.dat that wasn't fully deleted.
-                writeSeedToLevelDat(worldName, lockedSeed, hardcore);
-                log.info("Regenerating '" + worldName + "' with LOCKED seed: " + lockedSeed
+                finalSeed = lockedSeed;
+                log.info("Regenerating '" + worldName + "' with LOCKED seed: " + finalSeed
                         + (hardcore ? " [HARDCORE]" : ""));
             } else {
-                long randomSeed = new java.security.SecureRandom().nextLong();
-                creator.seed(randomSeed);
-                log.info("Regenerating '" + worldName + "' with NEW random seed: " + randomSeed
+                finalSeed = new java.security.SecureRandom().nextLong();
+                log.info("Regenerating '" + worldName + "' with NEW random seed: " + finalSeed
                         + (hardcore ? " [HARDCORE]" : ""));
             }
+
+            creator.seed(finalSeed);
+            // Pre-write level.dat with the chosen seed.
+            // This is the reliable way to guarantee the seed — WorldCreator.seed()
+            // alone can be ignored by Paper if a stale level.dat survives deletion.
+            writeSeedToLevelDat(worldName, finalSeed, hardcore);
 
             World created = Bukkit.createWorld(creator);
             if (created != null) {
@@ -952,7 +952,7 @@ public class ResetManager {
 
         Difficulty difficulty;
         try {
-            difficulty = Difficulty.valueOf(cfg.getDifficulty());
+            difficulty = Difficulty.valueOf(cfg.getDifficulty().toUpperCase());
         } catch (IllegalArgumentException e) {
             log.warning("Invalid difficulty '" + cfg.getDifficulty() + "', defaulting to HARD.");
             difficulty = Difficulty.HARD;
@@ -1306,7 +1306,24 @@ public class ResetManager {
         // ── Server properties patches ─────────────────────────────────────
         String serverPropsStr;
         if (cfg.isServerPropertiesEnabled()) {
-            Map<String, String> patches = cfg.getServerPropertiesValues();
+            Map<String, String> patches = new java.util.TreeMap<>(cfg.getServerPropertiesValues());
+
+            // Supplement the patch list with per-world settings if they exist,
+            // so admins see everything that's changing in one list.
+            for (String wn : cfg.getWorldsToReset()) {
+                if (cfg.isHardcoreForWorld(wn)) {
+                    patches.put("hardcore." + wn, "true");
+                }
+                String env = cfg.getWorldEnvironment(wn);
+                if (env != null && !env.isEmpty()) {
+                    patches.put("environment." + wn, env);
+                }
+                Long seed = cfg.getSeedForWorld(wn);
+                if (seed != null) {
+                    patches.put("seed." + wn, String.valueOf(seed));
+                }
+            }
+
             if (patches.isEmpty()) {
                 serverPropsStr = "enabled (no values configured)";
             } else {
@@ -1478,6 +1495,10 @@ public class ResetManager {
             writeNbtCompound(dos, "", () -> {
                 // "Data" compound
                 writeNbtCompound(dos, "Data", () -> {
+                    writeNbtInt(dos, "version", 19133);
+                    writeNbtString(dos, "LevelName", worldName);
+                    writeNbtByte(dos, "Initialized", (byte) 1);
+
                     // Legacy seed field (Spigot pre-1.16)
                     writeNbtLong(dos, "RandomSeed", seed);
                     // Hardcore flag — Paper/Spigot reads this from level.dat on world load
@@ -1519,6 +1540,16 @@ public class ResetManager {
     }
 
     /**
+     * Write a named TAG_Int (type 3) with the given value.
+     */
+    private static void writeNbtInt(DataOutputStream dos, String name, int value)
+            throws IOException {
+        dos.writeByte(3);            // TAG_Int
+        writeNbtName(dos, name);
+        dos.writeInt(value);
+    }
+
+    /**
      * Write a named TAG_Byte (type 1) with the given value.
      */
     private static void writeNbtByte(DataOutputStream dos, String name, byte value)
@@ -1526,6 +1557,18 @@ public class ResetManager {
         dos.writeByte(1);            // TAG_Byte
         writeNbtName(dos, name);
         dos.writeByte(value);
+    }
+
+    /**
+     * Write a named TAG_String (type 8) with the given value.
+     */
+    private static void writeNbtString(DataOutputStream dos, String name, String value)
+            throws IOException {
+        dos.writeByte(8);            // TAG_String
+        writeNbtName(dos, name);
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        dos.writeShort(bytes.length);
+        dos.write(bytes);
     }
 
     /** Write a length-prefixed UTF-8 tag name as used by the NBT spec. */
