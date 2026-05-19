@@ -992,12 +992,7 @@ public class ResetManager {
             diffStr = patches.get("difficulty");
         }
 
-        try {
-            difficulty = Difficulty.valueOf(diffStr.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            log.warning("Invalid difficulty '" + diffStr + "', defaulting to HARD.");
-            difficulty = Difficulty.HARD;
-        }
+        difficulty = parseDifficulty(diffStr);
 
         Map<String, String> rules = cfg.getGamerules();
 
@@ -1022,8 +1017,32 @@ public class ResetManager {
             for (Map.Entry<String, String> entry : rules.entrySet()) {
                 applyGameRule(world, entry.getKey(), entry.getValue());
             }
-            log.info("Applied difficulty + " + rules.size() + " gamerule(s) to '" + worldName + "'.");
+            log.info("Applied difficulty (" + difficulty + ") + " + rules.size() + " gamerule(s) to '" + worldName + "'.");
         }
+    }
+
+    /**
+     * Parse difficulty from a string, supporting names (HARD) and numbers (3).
+     */
+    private Difficulty parseDifficulty(String input) {
+        if (input == null) return Difficulty.HARD;
+        String val = input.trim().toUpperCase();
+
+        // Try parsing by name
+        try {
+            return Difficulty.valueOf(val);
+        } catch (IllegalArgumentException ignored) {}
+
+        // Try parsing by ID (0=peaceful, 1=easy, 2=normal, 3=hard)
+        switch (val) {
+            case "0": return Difficulty.PEACEFUL;
+            case "1": return Difficulty.EASY;
+            case "2": return Difficulty.NORMAL;
+            case "3": return Difficulty.HARD;
+        }
+
+        log.warning("Invalid difficulty '" + input + "', defaulting to HARD.");
+        return Difficulty.HARD;
     }
 
     /**

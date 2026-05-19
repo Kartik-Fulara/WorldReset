@@ -7,15 +7,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.4.4] — Current
+## [1.4.6] — Current
 
-### Fixed
-- **`server.properties` patches not applied in live-regeneration mode** (`ResetManager` — `executeReset()`) — `writeServerProperties()` was previously only called in the restart path. It is now called before world regeneration in both modes, ensuring `server.properties` is always updated before any worlds are created.
-- **Priority of `serverprops` patches** (`ResetManager`) — Values configured in `serverprops` (e.g., `difficulty`, `hardcore`, `level-seed`) now take priority over dedicated config settings. This ensures that if you patch a value via `/worldreset props`, it correctly overrides other settings during the next reset.
+### Enhanced
+- **Schedule command feedback** (`ResetCommand`) — Added clear warnings when the schedule is disabled, including the exact command to enable it. Improved configuration feedback to show the next fire time immediately after enabling.
+- **Schedule state management** (`ScheduleManager`) — Ensured internal state (active mode, firing guards) is correctly reset when the schedule is stopped, providing more accurate status reports.
 
 ---
 
-## [1.4.3] — 2026-05-19
+## [1.4.5] — 2026-05-19
+
+### Fixed
+- **Difficulty parsing robust and supports numbers** (`ResetManager`) — Difficulty settings from `serverprops` now support both names (`HARD`) and Minecraft's internal IDs (`3`). This ensures that if you set difficulty via the properties editor, it is correctly applied during the reset.
+- **Outdated UI warnings** (`ResetCommand`) — Removed the warning that server property patches only apply in restart mode, as they now apply in all modes. Added a clear indicator that patches take effect after the next reset.
+
+---
+
+## [1.4.4] — 2026-05-19
 
 ### Fixed
 - **Missing `DataVersion` in pre-written `level.dat`** (`ResetManager` — `writeSeedToLevelDat()`) — Modern Paper (1.21+) requires a valid `DataVersion` field in the NBT Data compound; without it, the server would fail to load the world with an `Unknown data version: 0` error. Added `DataVersion: 3953` (1.21) to the pre-written NBT. *(Superseded by the more robust fix in 1.4.3)*.

@@ -743,10 +743,18 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(kv("Min interval", cfg.getScheduleMinIntervalSecs() + "s (floor)"));
             sender.sendMessage(kv("Daily time", cfg.getScheduleDailyTime()));
             sender.sendMessage(kv("Timezone",   cfg.getScheduleTimezone()));
+
             String nextFire = sm.getNextFireDescription();
             if (!nextFire.isEmpty()) {
                 sender.sendMessage(kv("Next reset", nextFire));
             }
+
+            if (!cfg.isScheduleEnabled()) {
+                msg(sender, "");
+                msg(sender, red("⚠ The auto-reset schedule is currently DISABLED."));
+                msg(sender, yellow("Please enable the schedule using: ") + aqua("/worldreset schedule enable"));
+            }
+
             sender.sendMessage(gray("  enable/disable  — toggle schedule"));
             sender.sendMessage(gray("  mode interval   — reset every N seconds"));
             sender.sendMessage(gray("  mode daily      — reset once a day at HH:MM"));
@@ -759,6 +767,8 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 cfg.setScheduleEnabled(true);
                 sm.restart();
                 msg(sender, green("Schedule enabled."));
+                msg(sender, gray("  Current Mode: ") + white(cfg.getScheduleMode()) +
+                           gray(" | Next reset: ") + white(sm.getNextFireDescription()));
                 break;
             case "disable":
                 cfg.setScheduleEnabled(false);
@@ -774,6 +784,9 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 cfg.setScheduleMode(mode);
                 sm.restart();
                 msg(sender, green("Schedule mode set to '" + mode + "'."));
+                if (!cfg.isScheduleEnabled()) {
+                    msg(sender, yellow("⚠ Note: Schedule is disabled. Enable it with ") + aqua("/worldreset schedule enable"));
+                }
                 break;
             case "interval":
                 if (args.length < 3) { msg(sender, red("Usage: /worldreset schedule interval <seconds>")); break; }
@@ -783,6 +796,9 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     cfg.setScheduleIntervalSecs(secs);
                     sm.restart();
                     msg(sender, green("Schedule interval set to " + Math.max(minSecs, secs) + "s."));
+                    if (!cfg.isScheduleEnabled()) {
+                        msg(sender, yellow("⚠ Note: Schedule is disabled. Enable it with ") + aqua("/worldreset schedule enable"));
+                    }
                 } catch (NumberFormatException e) {
                     msg(sender, red("Must be a number (seconds)."));
                 }
@@ -795,6 +811,9 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 cfg.setScheduleDailyTime(args[2]);
                 sm.restart();
                 msg(sender, green("Daily reset time set to " + args[2] + "."));
+                if (!cfg.isScheduleEnabled()) {
+                    msg(sender, yellow("⚠ Note: Schedule is disabled. Enable it with ") + aqua("/worldreset schedule enable"));
+                }
                 break;
             default:
                 msg(sender, red("Unknown option. See /worldreset help for schedule commands."));
@@ -1349,7 +1368,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     "§7  Remove: /worldreset props remove " + key);
         }
         if (!cfg.isUseRestart()) {
-            sender.sendMessage(yellow("  ⚠ Patches only apply in restart mode."));
+            sender.sendMessage(gray("  (Patches will be written to server.properties during the next reset)"));
         }
     }
 
@@ -1371,12 +1390,8 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             msg(sender, green("Patch set: ") + aqua(key)
                     + gray("  now=") + white(live) + gold("  →  ") + green(value));
         }
-        if (!cfg.isUseRestart()) {
-            msg(sender, yellow("  ⚠ use-restart=false — patch won't apply until restart mode is on.  "
-                    + "/worldreset config use-restart true"));
-        }
+        msg(sender, gray("  (Patch will take effect after the next reset)"));
     }
-
     // ── Help (paginated, 5 pages) ──────────────────────────────────────────
 
     private static final int HELP_TOTAL_PAGES = 5;

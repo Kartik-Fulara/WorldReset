@@ -94,9 +94,9 @@ public class ScheduleManager {
         if (task != null) {
             task.cancel();
             task = null;
-            lastDailyMinuteFired = -1;
-            activeMode = "";
         }
+        lastDailyMinuteFired = -1;
+        activeMode = "";
     }
 
     /**
