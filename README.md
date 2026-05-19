@@ -2,9 +2,9 @@
 
 **Delete and regenerate Minecraft worlds on demand or on a schedule — with full control over what changes, what survives, and who gets notified.**
 
-![Version](https://img.shields.io/badge/version-1.4.0-blue?style=flat-square)
-![Platform](https://img.shields.io/badge/platform-Paper%2FSpigot%201.16%2B-brightgreen?style=flat-square)
-![Java](https://img.shields.io/badge/java-17%2B-orange?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.4.4-blue?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-Paper%2FSpigot%201.16%20--%201.21-brightgreen?style=flat-square)
+![Java](https://img.shields.io/badge/java-17%20--%2025-orange?style=flat-square)
 ![Licence](https://img.shields.io/badge/licence-MIT-lightgrey?style=flat-square)
 
 ---
@@ -31,7 +31,7 @@
 **Reset & Worlds**
 - Two reset modes: `restart` (clean JVM restart via `spigot().restart()`) and `live-regeneration` (worlds deleted and recreated while the server runs)
 - Configurable countdown with chat broadcast, title/subtitle display, and ActionBar timer
-- Per-world locked seeds written to `level.dat` before every reset so Paper always honours them
+- **Reliable Seeds:** Per-world seeds (locked or random) are pre-written to `level.dat` before every reset using a robust legacy-upgrade method, ensuring Paper 1.16–1.21+ always honours them.
 - Per-world hardcore mode and custom environment (NORMAL / NETHER / THE_END) overrides
 - Per-world custom generator plugin support
 - Gamerules, difficulty, world border, and spawn point applied automatically after reset
@@ -48,7 +48,7 @@
 - Pre/post-reset console commands with optional strict mode (abort on failure)
 - Whitelist auto-enabled during reset, auto-disabled after
 - Async world deletion with NIO `walkFileTree` and retry loop
-- `server.properties` patching applied on every restart-mode reset
+- **High-Priority Patching:** `server.properties` patches are written *before* world generation and correctly override dedicated config settings (difficulty, hardcore, seed).
 - Community vote-to-reset with configurable required percentage, duration, and minimum player count
 - Persistent reset history log (`reset-history.log`)
 - Async update checker against the GitHub Releases API — notifies ops in-game on join
@@ -57,23 +57,24 @@
 - Discord webhook: startup template (sent on every server start, distinguishes post-reset vs normal) and start template (sent when a reset is confirmed)
 - Countdown milestone Discord messages at configurable seconds-remaining thresholds
 - 23 named `{placeholder}` tokens across all templates
+- **Enhanced Notifications:** `{server_props}` now includes per-world hardcore, environment, and seed changes in the Discord report.
 - Paginated in-game help (`/worldreset help [1-5]`) with clickable navigation
 - Rich clickable chat UI for worlds, seeds, gamerules, and server properties lists
-- Grouped browsable view of all 54 standard `server.properties` keys with live values and clickable `[Set]` / `[X]` buttons
+- **Standard Property Commands:** Direct subcommands for all 54 standard `server.properties` keys via `/worldreset props <key> <value>`.
 
 ---
 
 ## Requirements
 
-- Paper or Spigot 1.16 or later
-- Java 17 or later
+- Paper or Spigot 1.16 or later (Fully tested on **1.21.11**)
+- Java 17 to **25** (OpenJDK)
 - No external dependencies — pure Java, no NMS imports
 
 ---
 
 ## Installation
 
-1. Download the `WorldResetPlugin-1.4.0.jar` from the [releases page](../../releases/latest).
+1. Download the `WorldResetPlugin-1.4.4.jar` from the [releases page](../../releases/latest).
 2. Drop the JAR into your server's `plugins/` directory.
 3. Start (or restart) the server — the plugin generates `config.yml` and companion files automatically.
 4. Edit `plugins/WorldResetPlugin/config.yml` to configure your worlds, schedule, and Discord webhook.
@@ -88,7 +89,7 @@ The plugin generates three configuration files on first run:
 | File | Purpose |
 |---|---|
 | `config.yml` | All general settings — worlds, countdown, gamerules, schedule, Discord, etc. |
-| `server-properties.yml` | Key→value patches written to `server.properties` on every restart-mode reset |
+| `server-properties.yml` | Key→value patches written to `server.properties` on every reset |
 | `advanced.yml` | Per-world environment overrides and custom generator plugins |
 
 All values in `config.yml` can be read or changed in-game with `/worldreset config get <key>` and `/worldreset config set <key> <value>`.
@@ -108,7 +109,7 @@ worlds:
 seeds: {}          # e.g.  world: 123456789
 hardcore: {}       # e.g.  world: true
 
-difficulty: HARD
+difficulty: hard
 
 gamerules:
   naturalRegeneration: "false"
@@ -154,7 +155,7 @@ vote:
 | `worlds [add\|remove] [name]` | `w` | `worldreset.admin` | List or modify the reset world list |
 | `seed <world> [value\|random\|lock\|unlock]` | — | `worldreset.admin` | Interactive per-world seed management |
 | `hardcore <world> [true\|false\|list]` | — | `worldreset.admin` | Toggle hardcore mode per world |
-| `gamerule [rule] [value\|remove]` | `gr` | `worldreset.admin` | List or set gamerules applied after reset |
+| `gamerule [rule] [value\|remove]` | `gr` | `worldreset.admin` | List or set gamerules applied after reset (Hardcore managed via `/wr hardcore`) |
 | `environment <world> [env\|clear]` | `env` | `worldreset.admin` | Override world environment (NORMAL / NETHER / THE_END) |
 | `generator <world> [plugin\|clear]` | `gen` | `worldreset.admin` | Assign a custom generator plugin to a world |
 | `config [set\|get] [key] [value]` | `cfg` | `worldreset.admin` | Read or write any config key in-game |
@@ -164,7 +165,7 @@ vote:
 | `backup [now\|enable\|disable\|keep\|dir]` | `bk` | `worldreset.backup` | Manage and trigger backups |
 | `history [n]` | `hist` | `worldreset.history` | Show last n reset history entries (default 10) |
 | `serverprops [set\|remove\|enable\|disable\|reload\|list]` | `sp` | `worldreset.admin` | Manage the `server.properties` patch list |
-| `props [key] [value\|remove\|enable\|disable\|reload]` | `p`, `prop` | `worldreset.admin` | Grouped browser for all 54 standard `server.properties` keys |
+| `props [key] [value\|remove\|enable\|disable\|reload]` | `p`, `prop` | `worldreset.admin` | Direct access to all 54 standard keys (e.g., `/wr p pvp false`) |
 
 ### `/resetvote` (aliases: `rv`, `vote-reset`, `voterestart`)
 
@@ -209,7 +210,7 @@ world_the_end (THE_END | seed: random | hardcore: no)
 ─────────────────────────────
 ⚙️ **Settings applied after reset:**
 📋 **Gamerules:** naturalRegeneration=false, keepInventory=false
-💀 **Difficulty:** HARD
+💀 **Difficulty:** hard
 ☠ **Hardcore:** world: no, world_nether: no, world_the_end: no
 🗺️ **World border:** enabled, size: 1000.0, center: 0,0
 📍 **Spawn:** enabled, world, 0/64/0
@@ -219,48 +220,11 @@ world_the_end (THE_END | seed: random | hardcore: no)
 📁 **Extra paths deleted:** logs, playerdata, advancements, stats
 🔒 **Preserved paths:** (none)
 ─────────────────────────────
-🛠️ **server.properties patches:** difficulty=hard, pvp=true
+🛠️ **server.properties patches:** difficulty=hard, pvp=true, seed.world=123456789
 ▶ **Pre-reset commands:** (none)
 ◀ **Post-reset commands:** (none)
 💾 **Backup:** enabled (keep 5)  |  🔐 **Whitelist:** disabled
 🗳️ **Vote result:** N/A  |  **Voters:** N/A
-
-### Available placeholders
-
-The following `{placeholder}` tokens are available across the webhook templates:
-
-| Placeholder | Resolves to |
-|---|---|
-| `{server}` | Server name from `server.properties` |
-| `{initiator}` | Player name, `Schedule`, or `Vote` |
-| `{worlds}` | Comma-separated list of worlds being reset |
-| `{worlds_detail}` | Per-world: environment, seed (locked/random), hardcore flag |
-| `{mode}` | `restart` or `live-regeneration` |
-| `{time}` | Date/time the reset occurred (server timezone) |
-| `{gamerules}` | Configured gamerule key=value pairs |
-| `{difficulty}` | Configured difficulty |
-| `{seeds}` | Locked seeds summary; `(none — random each reset)` if none |
-| `{hardcore}` | Per-world hardcore flag |
-| `{extra_paths}` | Paths deleted on reset |
-| `{preserve_paths}` | Paths kept across the reset |
-| `{voter_list}` | Display names of players who voted yes |
-| `{vote_result}` | e.g. `8 voted yes`; `N/A` for non-vote resets |
-| `{player_data}` | What player data is cleared |
-| `{backup}` | Backup status: `enabled (keep N)` or `disabled` |
-| `{world_border}` | World border config (enabled/disabled, size, center) |
-| `{spawn}` | Spawn config (enabled/disabled, world, xyz) |
-| `{server_props}` | `server.properties` patches applied after restart |
-| `{pre_commands}` | Commands run before the reset starts |
-| `{post_commands}` | Commands run after the reset finishes |
-| `{whitelist}` | Whitelist behaviour during reset |
-| `{duration}` | How long the reset took (startup template only) |
-| `{reason}` | `World Reset` or `Normal Start` (startup template only) |
-| `{reset_initiator}` | Who triggered the reset (startup template only) |
-| `{reset_time}` | Timestamp when the reset began (startup template only) |
-
-Templates support YAML block scalars (`|`) and `\n` for line breaks. All template strings are fully customisable in `config.yml`.
-
-> **Note:** The `discord-complete-template` (a post-reset completion message) was intentionally removed from automatic sending in 1.4.0. The `discord-startup-template` now serves this purpose — it fires when the server comes back online and identifies the restart as a `World Reset` start rather than a `Normal Start`.
 
 ---
 
@@ -268,43 +232,11 @@ Templates support YAML block scalars (`|`) and `\n` for line breaks. All templat
 
 ### Restart mode (`use-restart: true`)
 
-The plugin kicks all players, deletes the configured worlds, writes a minimal `level.dat` with the locked seed and hardcore flag for each world, and patches `server.properties` from the configured patch list. It then calls `spigot().restart()` and writes a `pending-post-reset.flag` file containing the initiator name and reset timestamp. On the next startup, the plugin detects this flag, deletes it, and applies gamerules, difficulty, world border, and spawn point in a deferred two-tick task. The Discord startup notification reads the flag values so `{reason}`, `{reset_initiator}`, and `{reset_time}` are always accurate.
+The plugin kicks all players, deletes the configured worlds, writes a minimal legacy-format `level.dat` (DataVersion 2230) with the seed and hardcore flag, and patches `server.properties`. It then calls `spigot().restart()`. On the next startup, Paper detects the legacy `level.dat`, automatically upgrades it to the 1.21+ format (generating the correct dimensions), and applies gamerules/difficulty. This method guarantees that seeds are always honoured, even on modern Paper builds.
 
 ### Live-regeneration mode (`use-restart: false`)
 
-The plugin unloads the configured worlds, deletes their directories asynchronously using NIO `walkFileTree`, pre-writes a `level.dat` for any worlds with locked seeds, then calls `Bukkit.createWorld()` on the main thread for each world. Gamerules, difficulty, world border, and spawn point are applied immediately after the new worlds are loaded — no restart or deferred flag is needed.
-
-> **Recommendation:** Use restart mode on production servers. It guarantees a clean JVM state, respects Paper's world-loading pipeline, and avoids edge cases around plugin state that can occur when worlds are torn down and recreated at runtime.
-
----
-
-## Schedule Examples
-
-```yaml
-# Example 1 — Reset every 24 hours (interval mode)
-schedule:
-  enabled: true
-  mode: "interval"
-  interval-seconds: 86400   # 24 × 60 × 60
-  timezone: "UTC"           # not used in interval mode
-```
-
-```yaml
-# Example 2 — Reset daily at 04:00 New York time (daily mode)
-schedule:
-  enabled: true
-  mode: "daily"
-  daily-time: "04:00"
-  timezone: "America/New_York"   # any IANA zone ID
-```
-
-```yaml
-# Example 3 — Reset every 7 days (interval mode)
-schedule:
-  enabled: true
-  mode: "interval"
-  interval-seconds: 604800   # 7 × 24 × 60 × 60
-```
+The plugin unloads worlds, deletes directories asynchronously, pre-writes the legacy `level.dat` for **all** worlds (ensuring random seeds are genuine even if file deletion is incomplete), then calls `Bukkit.createWorld()`. Gamerules, difficulty, and other settings are applied immediately.
 
 ---
 
@@ -312,11 +244,12 @@ schedule:
 
 | Version | Highlights |
 |---|---|
-| 1.4.0 | Startup Discord notification replaces complete notification; `pending-post-reset.flag` now stores initiator and timestamp for accurate post-restart reporting |
-| 1.3.0 | `discord-start-template` expanded to 23 placeholders covering every setting changed by the reset; `/worldreset props` grouped browser for all 54 standard `server.properties` keys |
-| 1.2.0 | Async update checker against GitHub Releases API; per-world custom environment and generator plugin support via `advanced.yml` |
-| 1.1.0 | Community vote-to-reset (`/resetvote`); configurable `min-players` and `required-percent`; vote result and voter list passed to Discord templates |
-| 1.0.0 | Initial release: restart and live-regeneration modes, per-world seeds, gamerules, schedule, ZIP backups, and `server.properties` patching |
+| **1.4.4** | **ServerProps Priority:** `serverprops` patches now override dedicated config settings and are written *pre-generation* in all modes. |
+| **1.4.3** | **Paper 1.21 Fix:** Reverted `level.dat` to legacy NBT format to resolve the `No key dimensions` startup crash on modern Paper versions. |
+| **1.4.2** | **Paper 1.21 Support:** Added `DataVersion` to NBT and `api-version: '1.21'` to `plugin.yml` to resolve legacy warnings and loading errors. |
+| **1.4.1** | **Direct Prop Commands:** Added subcommands for all 54 standard server properties; removed synthetic `hardcore` gamerule row in favour of dedicated command. |
+| 1.4.0 | Startup Discord notification replaces complete notification; `pending-post-reset.flag` now stores initiator and timestamp for accurate reporting. |
+| 1.3.0 | `discord-start-template` expanded to 23 placeholders; `/worldreset props` grouped browser for all 54 standard `server.properties` keys. |
 
 Full changelog: [CHANGELOG.md](CHANGELOG.md)
 
@@ -324,7 +257,7 @@ Full changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## Contributing
 
-Pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the coding rules (no NMS, no reflection, no silent exception swallowing, and all public manager methods require Javadoc).
+Pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the coding rules.
 
 ---
 
