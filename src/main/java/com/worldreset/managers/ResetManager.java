@@ -374,31 +374,28 @@ public class ResetManager {
                 //     • Random  → brand-new seed each reset, independent per world.
                 for (String wn : cfg.getWorldsToReset()) {
                     Long lockedSeed = cfg.getSeedForWorld(wn);
+                    boolean hc      = cfg.isHardcoreForWorld(wn);
                     if (lockedSeed != null) {
                         // Locked world — always use the stored seed.
-                        writeSeedToLevelDat(wn, lockedSeed);
-                        log.info("[Seed] '" + wn + "' → LOCKED seed " + lockedSeed + " written to level.dat.");
+                        writeSeedToLevelDat(wn, lockedSeed, hc);
+                        log.info("[Seed] '" + wn + "' → LOCKED seed " + lockedSeed
+                                + (hc ? " [HARDCORE]" : "") + " written to level.dat.");
                     } else {
                         // Random world — generate a fresh seed now so each reset
                         // produces a genuinely different world, regardless of what
                         // level-seed says in server.properties.
                         long randomSeed = new java.security.SecureRandom().nextLong();
-                        writeSeedToLevelDat(wn, randomSeed);
-                        log.info("[Seed] '" + wn + "' → new RANDOM seed " + randomSeed + " written to level.dat.");
+                        writeSeedToLevelDat(wn, randomSeed, hc);
+                        log.info("[Seed] '" + wn + "' → new RANDOM seed " + randomSeed
+                                + (hc ? " [HARDCORE]" : "") + " written to level.dat.");
                     }
                 }
 
-                // ── FIX: Send Discord COMPLETE before restart ────────────────
-                // Must be synchronous (blocking) here because after spigot().restart()
-                // the JVM begins shutting down and async tasks may never execute.
-                {
-                    String webhookUrl = cfg.getDiscordWebhookUrl();
-                    if (webhookUrl != null && !webhookUrl.isEmpty()) {
-                        long durationSecs = (System.currentTimeMillis() - resetStartMs) / 1000L;
-                        sendDiscordWebhook(webhookUrl,
-                                buildDiscordMessage(cfg.getDiscordCompleteTemplate(), true, durationSecs));
-                    }
-                }
+                // ── Write post-restart flag ─────────────────────────────────
+                // Detected in onEnable() after the server comes back up so we
+                // can re-apply gamerules, difficulty, world border, and spawn
+                // to the freshly-created worlds.
+                writePendingRestartFlag();
 
                 log.info("Triggering Spigot server restart (use-restart=true)…");
                 try {
@@ -449,16 +446,6 @@ public class ResetManager {
                         cfg.getWorldsToReset(), durationSecs);
                 lastResetCompleteMs = System.currentTimeMillis();
 
-                // Discord complete notification — sent synchronously so it is
-                // never dropped if the server is reloading or shutting down.
-                // mainContinue runs on the main thread so this is consistent
-                // with how the restart path sends its COMPLETE notification.
-                String webhookUrl = cfg.getDiscordWebhookUrl();
-                if (webhookUrl != null && !webhookUrl.isEmpty()) {
-                    sendDiscordWebhook(webhookUrl,
-                            buildDiscordMessage(cfg.getDiscordCompleteTemplate(), true, durationSecs));
-                }
-
                 log.info("=== WorldReset complete ===");
             }
         };
@@ -474,6 +461,74 @@ public class ResetManager {
             asyncWork.run();
             mainContinue.run();
         }
+    }
+
+    // ── Post-restart apply ─────────────────────────────────────────────────
+
+    /**
+     * Write a marker file that {@code WorldResetPlugin.onEnable()} checks on
+     * the next startup.  When found, all post-reset steps (gamerules,
+     * difficulty, world border, spawn, whitelist, post-commands) are applied
+     * to the freshly-created worlds after the server restarts.
+     *
+     * <p>The file stores the reset initiator and start timestamp as plain
+     * {@code key=value} lines so the startup Discord notification can report
+     * <em>who</em> triggered the reset and <em>when</em> it began.</p>
+     */
+    private void writePendingRestartFlag() {
+        File flag = new File(plugin.getDataFolder(), "pending-post-reset.flag");
+        try {
+            plugin.getDataFolder().mkdirs();
+            try (java.io.PrintWriter pw =
+                         new java.io.PrintWriter(new java.io.FileWriter(flag, false))) {
+                pw.println("initiator=" + (currentInitiator != null ? currentInitiator : "Unknown"));
+                pw.println("reset_time=" + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+                        .format(new java.util.Date()));
+            }
+            log.info("[PostRestart] Wrote pending-post-reset.flag (initiator="
+                    + currentInitiator + ") — post-reset steps will apply on next startup.");
+        } catch (IOException e) {
+            log.warning("[PostRestart] Could not write pending-post-reset.flag: "
+                    + e.getMessage()
+                    + " — gamerules/difficulty will NOT be applied after restart.");
+        }
+    }
+
+    /**
+     * Apply all post-reset world steps to the currently loaded worlds.
+     * Called:
+     * <ul>
+     *   <li>Directly after live-regeneration (no restart).</li>
+     *   <li>From {@code WorldResetPlugin.onEnable()} when the server detects
+     *       a {@code pending-post-reset.flag} left by a restart-mode reset.</li>
+     * </ul>
+     *
+     * Does NOT clear player data (already handled before the restart) or
+     * broadcast the reset-complete message — the caller is responsible for
+     * those to avoid double-sending.
+     */
+    public void applyPostResetSteps() {
+        ConfigManager cfg = plugin.getConfigManager();
+        applyGamerulesAndDifficulty();
+        applyWorldBorder();
+        applySpawn();
+
+        // Disable whitelist that was enabled before the restart (if configured).
+        if (cfg.isWhitelistDuringReset()) {
+            Bukkit.setWhitelist(false);
+            log.info("[PostRestart] Whitelist disabled after post-restart apply.");
+        }
+
+        // Run post-reset console commands.
+        for (String cmd : cfg.getPostResetCommands()) {
+            try {
+                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
+            } catch (Exception e) {
+                log.warning("Post-reset command failed '" + cmd + "': " + e.getMessage());
+            }
+        }
+
+        log.info("[PostRestart] Post-reset steps applied to all worlds.");
     }
 
     // ── File operations ────────────────────────────────────────────────────
@@ -837,10 +892,16 @@ public class ResetManager {
                 log.info("Using custom generator '" + generator + "' for '" + worldName + "'.");
             }
 
-            // Seed
+            // ── Seed ───────────────────────────────────────────────────────
             Long lockedSeed = cfg.getSeedForWorld(worldName);
             if (lockedSeed != null) {
                 creator.seed(lockedSeed);
+                // Pre-write level.dat with the locked seed so Paper always reads
+                // our value even if level.dat deletion above was incomplete.
+                // This mirrors what the restart path does and is the reliable
+                // way to guarantee the seed — WorldCreator.seed() alone can be
+                // overridden by a stale level.dat that wasn't fully deleted.
+                writeSeedToLevelDat(worldName, lockedSeed, hardcore);
                 log.info("Regenerating '" + worldName + "' with LOCKED seed: " + lockedSeed
                         + (hardcore ? " [HARDCORE]" : ""));
             } else {
@@ -886,7 +947,7 @@ public class ResetManager {
      * FIX 3: Uses the type-safe {@link GameRule} API introduced in Bukkit 1.13.
      * The deprecated {@link World#setGameRuleValue(String, String)} is no longer called.
      */
-    private void applyGamerulesAndDifficulty() {
+    public void applyGamerulesAndDifficulty() {
         ConfigManager cfg = plugin.getConfigManager();
 
         Difficulty difficulty;
@@ -956,7 +1017,7 @@ public class ResetManager {
 
     // ── Post-reset: world border ───────────────────────────────────────────
 
-    private void applyWorldBorder() {
+    public void applyWorldBorder() {
         ConfigManager cfg = plugin.getConfigManager();
         if (!cfg.isWorldBorderEnabled()) return;
 
@@ -978,7 +1039,7 @@ public class ResetManager {
 
     // ── Post-reset: spawn ─────────────────────────────────────────────────
 
-    private void applySpawn() {
+    public void applySpawn() {
         ConfigManager cfg = plugin.getConfigManager();
         if (!cfg.isSpawnEnabled()) return;
 
@@ -1082,81 +1143,84 @@ public class ResetManager {
      *
      * <h3>Available placeholders</h3>
      * <pre>
+     *  ── Identity ──────────────────────────────────────────────────────────
      *  {server}          — Bukkit server name
      *  {initiator}       — player name, "Schedule", or "Vote"
-     *  {worlds}          — comma-separated list of worlds being reset
-     *  {worlds_detail}   — worlds with environment, seed, and hardcore status
      *  {mode}            — "restart" or "live-regeneration"
      *  {time}            — current date/time (server timezone)
-     *  {gamerules}       — configured gamerule key=value pairs
-     *  {difficulty}      — configured difficulty
-     *  {seeds}           — worlds with locked seeds (or "random" if none)
-     *  {extra_paths}     — extra-paths.delete values
-     *  {voter_list}      — comma-separated yes-voters (only on vote resets)
-     *  {vote_result}     — e.g. "8 voted yes" or "N/A"
-     *  {player_data}     — summary of what player data is cleared
-     *  {backup}          — backup enabled/disabled status
      *  {duration}        — how long the reset took (complete only; "in progress" on start)
-     * </pre>
      *
-     * @param template     template string loaded from config
-     * @param isComplete   true for the complete message, false for the start message
-     * @param durationSecs elapsed seconds (only meaningful when isComplete is true)
+     *  ── Worlds ────────────────────────────────────────────────────────────
+     *  {worlds}          — comma-separated list of worlds being reset
+     *  {worlds_detail}   — per-world: environment, seed (locked/random), hardcore status
+     *
+     *  ── Seeds & Hardcore ──────────────────────────────────────────────────
+     *  {seeds}           — worlds with locked seeds; "(none — random each reset)" if none
+     *  {hardcore}        — per-world hardcore flag summary
+     *
+     *  ── World rules ───────────────────────────────────────────────────────
+     *  {gamerules}       — configured gamerule key=value pairs
+     *  {difficulty}      — configured difficulty (EASY/NORMAL/HARD/PEACEFUL)
+     *
+     *  ── World Border ──────────────────────────────────────────────────────
+     *  {world_border}    — world border config: enabled/disabled, size, center
+     *
+     *  ── Spawn ─────────────────────────────────────────────────────────────
+     *  {spawn}           — spawn config: enabled/disabled, world, x/y/z
+     *
+     *  ── Data clearing ─────────────────────────────────────────────────────
+     *  {player_data}     — summary of what player data is cleared
+     *  {extra_paths}     — paths deleted on reset (logs, playerdata, etc.)
+     *  {preserve_paths}  — paths preserved across reset
+     *
+     *  ── Server properties ─────────────────────────────────────────────────
+     *  {server_props}    — key=value pairs patched in server.properties
+     *
+     *  ── Commands ──────────────────────────────────────────────────────────
+     *  {pre_commands}    — pre-reset commands list
+     *  {post_commands}   — post-reset commands list
+     *
+     *  ── Misc ──────────────────────────────────────────────────────────────
+     *  {backup}          — backup enabled/disabled status
+     *  {whitelist}       — whether whitelist is enabled during the reset
+     *  {voter_list}      — player names who voted yes (Vote resets only)
+     *  {vote_result}     — e.g. "8 voted yes"  —  "N/A" for non-vote resets
+     * </pre>
      */
     private String buildDiscordMessage(String template, boolean isComplete, long durationSecs) {
         if (template == null || template.isEmpty()) return "";
         ConfigManager cfg = plugin.getConfigManager();
 
-        // {server}
-        String server = Bukkit.getServer().getName();
-
-        // {initiator}
+        // ── Identity ──────────────────────────────────────────────────────
+        String server    = Bukkit.getServer().getName();
         String initiator = currentInitiator != null ? currentInitiator : "Unknown";
+        String mode      = cfg.isUseRestart() ? "restart" : "live-regeneration";
+        String time      = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+        String duration  = isComplete ? formatDuration(durationSecs) : "in progress";
 
-        // {worlds} and {worlds_detail}
+        // ── Worlds ────────────────────────────────────────────────────────
         List<String> worldsList = cfg.getWorldsToReset();
         String worlds = String.join(", ", worldsList);
 
         StringBuilder worldsDetail = new StringBuilder();
         for (String w : worldsList) {
-            Long seed = cfg.getSeedForWorld(w);
-            String seedStr = (seed != null) ? String.valueOf(seed) : "random";
-            boolean hardcore = cfg.isHardcoreForWorld(w);
-            String envOverride = cfg.getWorldEnvironment(w);
-            String env;
+            Long    seed      = cfg.getSeedForWorld(w);
+            boolean hardcore  = cfg.isHardcoreForWorld(w);
+            String  envOverride = cfg.getWorldEnvironment(w);
+            String  env;
             if (envOverride != null && !envOverride.isEmpty()) {
                 env = envOverride.toUpperCase();
             } else if (w.endsWith("_nether"))  { env = "NETHER"; }
             else if (w.endsWith("_the_end"))   { env = "THE_END"; }
             else                               { env = "NORMAL"; }
-            worldsDetail.append(w).append(" [").append(env).append("]")
-                        .append(" seed=").append(seedStr);
-            if (hardcore) worldsDetail.append(" ☠HARDCORE");
-            worldsDetail.append("\n");   // real newline — escapeJson() converts it to \\n in JSON
+
+            worldsDetail.append("• **").append(w).append("** [").append(env).append("]");
+            worldsDetail.append("  seed=").append(seed != null ? "🔒 " + seed : "🎲 random");
+            if (hardcore) worldsDetail.append("  ☠ HARDCORE");
+            worldsDetail.append("\n");
         }
 
-        // {mode}
-        String mode = cfg.isUseRestart() ? "restart" : "live-regeneration";
-
-        // {time}
-        String time = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
-
-        // {gamerules}
-        Map<String, String> gamerules = cfg.getGamerules();
-        StringBuilder grSb = new StringBuilder();
-        if (gamerules.isEmpty()) {
-            grSb.append("(none configured)");
-        } else {
-            for (Map.Entry<String, String> e : gamerules.entrySet()) {
-                if (grSb.length() > 0) grSb.append(", ");
-                grSb.append(e.getKey()).append("=").append(e.getValue());
-            }
-        }
-
-        // {difficulty}
-        String difficulty = cfg.getDifficulty();
-
-        // {seeds}
+        // ── Seeds ─────────────────────────────────────────────────────────
         StringBuilder seedsSb = new StringBuilder();
         boolean anySeeds = false;
         for (String w : worldsList) {
@@ -1169,13 +1233,110 @@ public class ResetManager {
         }
         String seeds = anySeeds ? seedsSb.toString() : "(none — random each reset)";
 
-        // {extra_paths}
+        // ── Hardcore ──────────────────────────────────────────────────────
+        StringBuilder hcSb = new StringBuilder();
+        for (String w : worldsList) {
+            boolean hc = cfg.isHardcoreForWorld(w);
+            if (hcSb.length() > 0) hcSb.append(", ");
+            hcSb.append(w).append(": ").append(hc ? "☠ yes" : "no");
+        }
+        String hardcore = hcSb.length() > 0 ? hcSb.toString() : "(none)";
+
+        // ── Gamerules ─────────────────────────────────────────────────────
+        Map<String, String> gamerules = cfg.getGamerules();
+        StringBuilder grSb = new StringBuilder();
+        if (gamerules.isEmpty()) {
+            grSb.append("(none configured)");
+        } else {
+            for (Map.Entry<String, String> e : gamerules.entrySet()) {
+                if (grSb.length() > 0) grSb.append(", ");
+                grSb.append(e.getKey()).append("=").append(e.getValue());
+            }
+        }
+
+        // ── Difficulty ────────────────────────────────────────────────────
+        String difficulty = cfg.getDifficulty();
+
+        // ── World Border ──────────────────────────────────────────────────
+        String worldBorder;
+        if (cfg.isWorldBorderEnabled()) {
+            worldBorder = String.format("enabled  size=%.0f  center=(%.0f, %.0f)",
+                    cfg.getWorldBorderSize(),
+                    cfg.getWorldBorderCenterX(),
+                    cfg.getWorldBorderCenterZ());
+        } else {
+            worldBorder = "disabled";
+        }
+
+        // ── Spawn ─────────────────────────────────────────────────────────
+        String spawn;
+        if (cfg.isSpawnEnabled()) {
+            spawn = String.format("enabled  world=%s  xyz=(%.1f, %.1f, %.1f)",
+                    cfg.getSpawnWorld(),
+                    cfg.getSpawnX(), cfg.getSpawnY(), cfg.getSpawnZ());
+        } else {
+            spawn = "disabled";
+        }
+
+        // ── Player data ───────────────────────────────────────────────────
+        String playerDataSummary;
+        if (cfg.isPlayerDataEnabled()) {
+            List<String> items = new ArrayList<>();
+            if (cfg.isPlayerDataClearInventory())    items.add("inventory");
+            if (cfg.isPlayerDataClearEnderChest())   items.add("ender chest");
+            if (cfg.isPlayerDataClearXp())           items.add("XP");
+            if (cfg.isPlayerDataResetHealth())       items.add("health");
+            if (cfg.isPlayerDataResetHunger())       items.add("hunger");
+            if (cfg.isPlayerDataClearAdvancements()) items.add("advancements");
+            if (cfg.isPlayerDataClearStats())        items.add("stats");
+            playerDataSummary = items.isEmpty() ? "enabled (nothing selected)"
+                                                : String.join(", ", items);
+        } else {
+            playerDataSummary = "disabled";
+        }
+
+        // ── Extra paths ───────────────────────────────────────────────────
         List<String> extraPaths = cfg.getExtraDeletePaths();
         String extraPathsStr = extraPaths.isEmpty() ? "(none)" : String.join(", ", extraPaths);
 
-        // {voter_list} and {vote_result}
-        String voterList   = "N/A";
-        String voteResult  = "N/A";
+        // ── Preserve paths ────────────────────────────────────────────────
+        List<String> preservePaths = cfg.getPreservePaths();
+        String preservePathsStr = preservePaths.isEmpty() ? "(none)" : String.join(", ", preservePaths);
+
+        // ── Server properties patches ─────────────────────────────────────
+        String serverPropsStr;
+        if (cfg.isServerPropertiesEnabled()) {
+            Map<String, String> patches = cfg.getServerPropertiesValues();
+            if (patches.isEmpty()) {
+                serverPropsStr = "enabled (no values configured)";
+            } else {
+                StringBuilder spSb = new StringBuilder();
+                for (Map.Entry<String, String> e : patches.entrySet()) {
+                    if (spSb.length() > 0) spSb.append(", ");
+                    spSb.append(e.getKey()).append("=").append(e.getValue());
+                }
+                serverPropsStr = spSb.toString();
+            }
+        } else {
+            serverPropsStr = "disabled";
+        }
+
+        // ── Pre / Post commands ───────────────────────────────────────────
+        List<String> preCmds  = cfg.getPreResetCommands();
+        List<String> postCmds = cfg.getPostResetCommands();
+        String preCommandsStr  = preCmds.isEmpty()  ? "(none)" : String.join(", ", preCmds);
+        String postCommandsStr = postCmds.isEmpty() ? "(none)" : String.join(", ", postCmds);
+
+        // ── Backup ────────────────────────────────────────────────────────
+        String backupStatus = cfg.isBackupEnabled()
+                ? "enabled (keep " + cfg.getBackupKeep() + ")" : "disabled";
+
+        // ── Whitelist ─────────────────────────────────────────────────────
+        String whitelist = cfg.isWhitelistDuringReset() ? "enabled during reset" : "not changed";
+
+        // ── Vote ──────────────────────────────────────────────────────────
+        String voterList  = "N/A";
+        String voteResult = "N/A";
         VoteManager vm = plugin.getVoteManager();
         if ("Vote".equals(initiator) && vm != null) {
             List<String> voters = vm.getLastVoterNames();
@@ -1185,46 +1346,30 @@ public class ResetManager {
             }
         }
 
-        // {player_data}
-        String playerDataSummary;
-        if (cfg.isPlayerDataEnabled()) {
-            List<String> items = new ArrayList<>();
-            if (cfg.isPlayerDataClearInventory())   items.add("inventory");
-            if (cfg.isPlayerDataClearEnderChest())  items.add("ender chest");
-            if (cfg.isPlayerDataClearXp())          items.add("XP");
-            if (cfg.isPlayerDataResetHealth())      items.add("health");
-            if (cfg.isPlayerDataResetHunger())      items.add("hunger");
-            if (cfg.isPlayerDataClearAdvancements())items.add("advancements");
-            if (cfg.isPlayerDataClearStats())       items.add("stats");
-            playerDataSummary = items.isEmpty() ? "enabled (nothing selected)"
-                                                : String.join(", ", items);
-        } else {
-            playerDataSummary = "disabled";
-        }
-
-        // {backup}
-        String backupStatus = cfg.isBackupEnabled()
-                ? "enabled (keep " + cfg.getBackupKeep() + ")" : "disabled";
-
-        // {duration}
-        String duration = isComplete ? formatDuration(durationSecs) : "in progress";
-
         return template
-                .replace("{server}",        server)
-                .replace("{initiator}",     initiator)
-                .replace("{worlds}",        worlds)
-                .replace("{worlds_detail}", worldsDetail.toString().trim())
-                .replace("{mode}",          mode)
-                .replace("{time}",          time)
-                .replace("{gamerules}",     grSb.toString())
-                .replace("{difficulty}",    difficulty)
-                .replace("{seeds}",         seeds)
-                .replace("{extra_paths}",   extraPathsStr)
-                .replace("{voter_list}",    voterList)
-                .replace("{vote_result}",   voteResult)
-                .replace("{player_data}",   playerDataSummary)
-                .replace("{backup}",        backupStatus)
-                .replace("{duration}",      duration);
+                .replace("{server}",         server)
+                .replace("{initiator}",      initiator)
+                .replace("{mode}",           mode)
+                .replace("{time}",           time)
+                .replace("{duration}",       duration)
+                .replace("{worlds}",         worlds)
+                .replace("{worlds_detail}",  worldsDetail.toString().trim())
+                .replace("{seeds}",          seeds)
+                .replace("{hardcore}",       hardcore)
+                .replace("{gamerules}",      grSb.toString())
+                .replace("{difficulty}",     difficulty)
+                .replace("{world_border}",   worldBorder)
+                .replace("{spawn}",          spawn)
+                .replace("{player_data}",    playerDataSummary)
+                .replace("{extra_paths}",    extraPathsStr)
+                .replace("{preserve_paths}", preservePathsStr)
+                .replace("{server_props}",   serverPropsStr)
+                .replace("{pre_commands}",   preCommandsStr)
+                .replace("{post_commands}",  postCommandsStr)
+                .replace("{backup}",         backupStatus)
+                .replace("{whitelist}",      whitelist)
+                .replace("{voter_list}",     voterList)
+                .replace("{vote_result}",    voteResult);
     }
 
     /** Format a duration in seconds to a human-readable string like "2m 47s". */
@@ -1244,7 +1389,7 @@ public class ResetManager {
      * POST a plain {@code content} JSON message to a Discord webhook URL.
      * Must be called from an async thread (blocks on HTTP).
      */
-    private void sendDiscordWebhook(String url, String message) {
+    public void sendDiscordWebhook(String url, String message) {
         String json = "{\"content\":\"" + escapeJson(message) + "\"}";
         try {
             HttpClient client = HttpClient.newBuilder()
@@ -1298,8 +1443,8 @@ public class ResetManager {
     // ── Seed → level.dat (restart-mode fix) ───────────────────────────────
 
     /**
-     * Write a minimal gzipped NBT {@code level.dat} containing only the seed
-     * fields that Paper/Spigot reads on world creation.
+     * Write a minimal gzipped NBT {@code level.dat} containing the seed and
+     * hardcore flag that Paper/Spigot reads on world creation.
      *
      * <h3>Why this is needed</h3>
      * In restart mode the world folders (including their {@code level.dat}) are
@@ -1312,17 +1457,16 @@ public class ResetManager {
      * TAG_Compound("")
      *   TAG_Compound("Data")
      *     TAG_Long("RandomSeed")          ← read by pre-1.16 Spigot
+     *     TAG_Byte("hardcore")            ← 1 = hardcore, 0 = normal
      *     TAG_Compound("WorldGenSettings")
      *       TAG_Long("seed")              ← read by Paper/Spigot 1.16+
      * </pre>
      *
-     * No NMS imports or version-specific reflection are used — the NBT binary
-     * format is written directly, so this works on all Paper/Spigot versions.
-     *
      * @param worldName  name of the world folder (relative to server root)
      * @param seed       the locked seed value to embed
+     * @param hardcore   whether to flag the world as hardcore
      */
-    private void writeSeedToLevelDat(String worldName, long seed) {
+    private void writeSeedToLevelDat(String worldName, long seed, boolean hardcore) {
         File worldDir = new File(serverRoot(), worldName);
         worldDir.mkdirs();
         File levelDat = new File(worldDir, "level.dat");
@@ -1336,6 +1480,8 @@ public class ResetManager {
                 writeNbtCompound(dos, "Data", () -> {
                     // Legacy seed field (Spigot pre-1.16)
                     writeNbtLong(dos, "RandomSeed", seed);
+                    // Hardcore flag — Paper/Spigot reads this from level.dat on world load
+                    writeNbtByte(dos, "hardcore", (byte) (hardcore ? 1 : 0));
                     // Modern seed field (Paper/Spigot 1.16+)
                     writeNbtCompound(dos, "WorldGenSettings", () ->
                             writeNbtLong(dos, "seed", seed));
@@ -1343,7 +1489,7 @@ public class ResetManager {
             });
 
             log.info("[Seed] Pre-wrote level.dat with locked seed "
-                    + seed + " for '" + worldName + "'.");
+                    + seed + ", hardcore=" + hardcore + " for '" + worldName + "'.");
         } catch (IOException e) {
             log.warning("[Seed] Failed to pre-write level.dat for '"
                     + worldName + "': " + e.getMessage());
@@ -1370,6 +1516,16 @@ public class ResetManager {
         dos.writeByte(4);            // TAG_Long
         writeNbtName(dos, name);
         dos.writeLong(value);
+    }
+
+    /**
+     * Write a named TAG_Byte (type 1) with the given value.
+     */
+    private static void writeNbtByte(DataOutputStream dos, String name, byte value)
+            throws IOException {
+        dos.writeByte(1);            // TAG_Byte
+        writeNbtName(dos, name);
+        dos.writeByte(value);
     }
 
     /** Write a length-prefixed UTF-8 tag name as used by the NBT spec. */

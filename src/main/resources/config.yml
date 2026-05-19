@@ -157,26 +157,82 @@ pre-reset-commands-strict: false
 notifications:
   discord-webhook: ""
 
+  # ── Startup template ────────────────────────────────────────────────────
+  # Sent asynchronously every time the server starts (onEnable).
+  # Fires on BOTH post-reset restarts AND normal server starts.
+  #
+  # AVAILABLE PLACEHOLDERS
+  #  {server}           Server name (from server.properties)
+  #  {time}             Date/time this startup occurred
+  #  {reason}           "World Reset"  OR  "Normal Start"
+  #  {reset_initiator}  Player / Schedule / Vote that triggered the reset,
+  #                     or "N/A" when reason is "Normal Start"
+  #  {reset_time}       Timestamp when the reset began, or "N/A"
+  #
+  discord-startup-template: |
+    🟢 **Server Online** — **{server}**
+    **Reason:** {reason}
+    **Reset started by:** {reset_initiator}  |  **Reset began at:** {reset_time}
+    ⏰ **Online at:** {time}
+
   # ── Start template ──────────────────────────────────────────────────────
   # Sent immediately when a reset is confirmed (at the start of the countdown
-  # or when an instant reset fires).  All placeholders work here except
-  # {duration} which is not yet known.
+  # or when an instant reset fires).
+  #
+  # AVAILABLE PLACEHOLDERS — everything that will change on this reset:
+  #  {server}           Server name
+  #  {initiator}        Player / Schedule / Vote that started the reset
+  #  {mode}             restart  OR  live-regeneration
+  #  {time}             Timestamp the reset was triggered
+  #  {worlds}           Comma-separated world list
+  #  {worlds_detail}    Per-world: environment, seed (locked/random), hardcore flag
+  #  {seeds}            Locked seeds summary
+  #  {hardcore}         Per-world hardcore flag (yes/no per world)
+  #  {difficulty}       Difficulty applied after reset
+  #  {gamerules}        Gamerule key=value pairs applied after reset
+  #  {world_border}     World border config (enabled/disabled, size, center)
+  #  {spawn}            Spawn config (enabled/disabled, world, xyz)
+  #  {player_data}      What player data is cleared (inventory, XP, etc.)
+  #  {extra_paths}      Paths deleted on reset (logs, playerdata, etc.)
+  #  {preserve_paths}   Paths kept across the reset
+  #  {server_props}     server.properties patches applied after restart
+  #  {pre_commands}     Commands run before the reset starts
+  #  {post_commands}    Commands run after the reset finishes
+  #  {whitelist}        Whitelist behaviour during reset
+  #  {backup}           Backup status (enabled/disabled, keep N)
+  #  {vote_result}      e.g. "8 voted yes"  —  "N/A" for non-vote resets
+  #  {voter_list}       Names of players who voted yes
+  #
   discord-start-template: |
     🔄 **World Reset STARTED** — **{server}**
-    **Initiated by:** {initiator}
-    **Worlds:** {worlds}
-    **Mode:** {mode}  |  **Difficulty:** {difficulty}
+    **Initiated by:** {initiator}  |  **Mode:** {mode}  |  **Time:** {time}
     ─────────────────────────────
-    🌱 **Seeds (locked):** {seeds}
+    🌍 **Worlds:**
+    {worlds_detail}
+    ─────────────────────────────
+    ⚙️ **Settings applied after reset:**
     📋 **Gamerules:** {gamerules}
-    🗑️ **Extra paths deleted:** {extra_paths}
-    🧹 **Player data cleared:** {player_data}
-    💾 **Backup:** {backup}
+    💀 **Difficulty:** {difficulty}
+    ☠ **Hardcore:** {hardcore}
+    🗺️ **World border:** {world_border}
+    📍 **Spawn:** {spawn}
+    ─────────────────────────────
+    🗑️ **Data cleared:**
+    🧹 **Player data:** {player_data}
+    📁 **Extra paths deleted:** {extra_paths}
+    🔒 **Preserved paths:** {preserve_paths}
+    ─────────────────────────────
+    🛠️ **server.properties patches:** {server_props}
+    ▶ **Pre-reset commands:** {pre_commands}
+    ◀ **Post-reset commands:** {post_commands}
+    💾 **Backup:** {backup}  |  🔐 **Whitelist:** {whitelist}
     🗳️ **Vote result:** {vote_result}  |  **Voters:** {voter_list}
-    ⏰ **Time:** {time}
 
   # ── Complete template ────────────────────────────────────────────────────
-  # Sent after the reset finishes (worlds regenerated or server restarted).
+  # NOTE: This template is NO LONGER sent automatically after a reset.
+  # The server sends discord-startup-template when it comes back online instead.
+  # You can still reference this template for custom integrations or re-enable
+  # it by calling sendDiscordWebhook() in your own code.
   # All placeholders work here including {duration}.
   discord-complete-template: |
     ✅ **World Reset COMPLETE** — **{server}**
@@ -211,6 +267,19 @@ player-data:
   reset-hunger: true
   clear-advancements: true
   clear-stats: true
+
+# ── Update checker ────────────────────────────────────────────────────────────
+#
+# Checks GitHub Releases for a newer version on startup (async — never blocks
+# the server).  Ops / admins with worldreset.admin are notified in-game when
+# they join if an update is available.
+#
+# Set github-repo to the "owner/repo" of your fork or release repository.
+# Example: "MyUsername/WorldResetPlugin"
+#
+update-checker:
+  enabled: true
+  github-repo: "YourUsername/WorldResetPlugin"
 
 # ── Community vote-to-reset ───────────────────────────────────────────────────
 vote:

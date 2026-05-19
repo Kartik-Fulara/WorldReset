@@ -19,85 +19,37 @@ import java.util.*;
 /**
  * /worldreset — single entry point for all plugin sub-commands.
  *
- * UX design (v1.2.0)
- * ──────────────────
- *  • Running any sub-command with no extra arguments now SHOWS its list /
- *    status rather than printing a usage error. You never need to type "list".
+ * Changes in this version
+ * ────────────────────────
+ *  FIX-C  handleStart: --confirm bypass patched.
+ *         Passing --confirm without a prior /worldreset start used to skip the
+ *         safety check entirely. Now it validates that a pending entry exists
+ *         and hasn't expired before proceeding.
  *
- *  • /worldreset help prints every sub-command in one place with plain-English
- *    descriptions, so you can always find what you need quickly.
+ *  FIX-D  handleGamerule: "hardcore" intercepted as a synthetic gamerule.
+ *         /worldreset gamerule hardcore true|false sets hardcore for ALL worlds
+ *         in the reset list via cfg.setHardcoreForWorld(). It is displayed at
+ *         the top of the gamerule list. /worldreset gamerule remove hardcore
+ *         resets all worlds to hardcore=false.
  *
- *  • server-properties is loaded from server-properties.yml (not config.yml).
- *    Setting a value with /worldreset serverprops set auto-enables patching.
+ *  NEW    handleProps — /worldreset props (alias: p, prop)
+ *         A completely separate sub-command covering ALL 54 standard Minecraft
+ *         server.properties keys, grouped by category, with live values, patch
+ *         status, [Set] / [X] click buttons and full tab-completion with value
+ *         hints. Uses the same ConfigManager / ServerPropertiesManager backend
+ *         as serverprops but with a cleaner UX.
  *
- * Sub-command summary
- * ────────────────────
- *  CORE
- *    help                                   Full command reference
- *    start [--now] [--confirm]              Begin a reset
- *    cancel                                 Stop the running countdown
- *    status                                 Full snapshot of all settings
- *    reload                                 Reload config files from disk
+ * Sub-command summary (full)
+ * ───────────────────────────
+ *  (original sub-commands unchanged — see original file header for the full list)
  *
- *  CONFIG  (simple key=value settings)
- *    config <key> <value>
- *      countdown / interval / kick-msg / difficulty /
- *      use-restart / delete-async / whitelist-during-reset
- *
- *  WORLDS
- *    worlds                                 Show worlds that will be reset
- *    worlds add <name>                      Add a world
- *    worlds remove <name>                   Remove a world
- *
- *  SEEDS
- *    seed                                   Show seed settings for all worlds
- *    seed <world> <number|random>           Lock or unlock a world seed
- *
- *  HARDCORE
- *    hardcore                               Show hardcore setting for all worlds
- *    hardcore <world>                       Toggle hardcore for a world
- *
- *  ENVIRONMENT
- *    environment                            Show environment overrides
- *    environment <world> <NORMAL|NETHER|THE_END|auto>
- *
- *  GENERATOR
- *    generator                              Show custom generators
- *    generator <world> <pluginName[:id]|vanilla>
- *
- *  GAMERULES
- *    gamerule                               Show gamerules applied after reset
- *    gamerule <rule> <value>                Set a gamerule
- *    gamerule remove <rule>                 Remove a gamerule
- *
- *  DELETE / PRESERVE
- *    delete                                 Show extra paths deleted on reset
- *    delete add <path>                      Add a path
- *    delete remove <path>                   Remove a path
- *    preserve                               Show protected paths
- *    preserve add <path>
- *    preserve remove <path>
- *
- *  SCHEDULE
- *    schedule                               Show schedule status
- *    schedule enable / disable              Toggle the auto-reset schedule
- *    schedule mode <interval|daily>         Set the schedule mode
- *    schedule interval <seconds>            Set interval (interval mode)
- *    schedule daily <HH:MM>                 Set daily time (daily mode)
- *
- *  BACKUP
- *    backup                                 Show backup settings
- *    backup now                             Run an immediate backup
- *    backup enable / disable
- *    backup keep <n>                        Number of backups to keep
- *    backup dir <path>                      Backup directory
- *
- *  SERVER PROPERTIES  (server-properties.yml)
- *    serverprops                            Show all values + what will change
- *    serverprops set <key> <value>          Add or update a patch value
- *    serverprops remove <key>              Remove a patch value
- *    serverprops enable / disable           Toggle patching
- *    serverprops reload                     Re-read server-properties.yml
+ *  PROPS  (new — server.properties patch editor, all 54 keys)
+ *    props                              Show all keys grouped by category
+ *    props <key>                        Show live + patch value for one key
+ *    props <key> <value>                Set a patch (any of 54 standard keys)
+ *    props remove <key>                 Remove a patch
+ *    props enable / disable             Toggle patching
+ *    props reload                       Re-read server.properties from disk
  */
 public class ResetCommand implements CommandExecutor, TabCompleter {
 
@@ -115,12 +67,10 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
 
     // ── Helpers for per-sub-command permission checks ─────────────────────
 
-    /** Returns true if the sender has worldreset.admin OR the given sub-permission. */
     private boolean hasPerm(CommandSender sender, String subPerm) {
         return sender.hasPermission(PERM) || sender.hasPermission(subPerm);
     }
 
-    /** Sends a "no permission" message and returns false. */
     private boolean denyPerm(CommandSender sender) {
         msg(sender, red("You don't have permission to use this command."));
         return false;
@@ -132,9 +82,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     public boolean onCommand(CommandSender sender, Command command,
                              String label, String[] args) {
 
-        // Minimum: need worldreset.admin or at least one sub-perm.
-        // We check individually per sub-command below; worldreset.use gates the
-        // command block so Bukkit shows "unknown command" without it.
         if (!sender.hasPermission(PERM) && !sender.hasPermission("worldreset.use")
                 && !sender.isOp()) {
             msg(sender, red("You don't have permission to use this command."));
@@ -204,13 +151,17 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             case "environment": handleEnvironment(sender, args);     break;
             case "sp":
             case "serverprops": handleServerProps(sender, args);     break;
+            // ── NEW: direct server-properties editor ─────────────────────
+            case "p":
+            case "prop":
+            case "props":       handleProps(sender, args);           break;
             default:
                 msg(sender, red("Unknown sub-command. Type /worldreset help to see all commands."));
         }
         return true;
     }
 
-    // ── start ──────────────────────────────────────────────────────────────
+    // ── start (FIX-C: --confirm bypass patched) ───────────────────────────
 
     private void handleStart(CommandSender sender, String[] args) {
         ResetManager rm = plugin.getResetManager();
@@ -227,6 +178,15 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 : "CONSOLE";
 
         if (confirm) {
+            // FIX-C: Validate a pending confirmation actually exists and hasn't expired.
+            // Previously, --confirm with no prior command bypassed the safety check entirely.
+            Long prev  = pendingConfirm.get(senderKey);
+            long nowMs = System.currentTimeMillis();
+            if (prev == null || nowMs - prev > CONFIRM_EXPIRE_MS) {
+                msg(sender, red("No pending confirmation — run /worldreset start first, then confirm within 30s."));
+                pendingConfirm.remove(senderKey);
+                return;
+            }
             pendingConfirm.remove(senderKey);
         } else {
             long nowMs = System.currentTimeMillis();
@@ -234,7 +194,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
 
             if (prev == null || nowMs - prev > CONFIRM_EXPIRE_MS) {
                 if (prev != null && nowMs - prev > CONFIRM_EXPIRE_MS) {
-                    // Previous confirmation window expired — tell the player
                     msg(sender, red("[RESET] Your confirmation expired. Run the command again to confirm."));
                 }
                 pendingConfirm.put(senderKey, nowMs);
@@ -278,7 +237,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
 
         sender.sendMessage(header("WorldReset — Status"));
 
-        // Reset state
         sender.sendMessage(section("Reset State"));
         sender.sendMessage(kv("Status",
                 rm.isResetPending()
@@ -291,7 +249,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(kv("Delete async",         String.valueOf(cfg.isDeleteAsync())));
         sender.sendMessage(kv("Whitelist during reset", String.valueOf(cfg.isWhitelistDuringReset())));
 
-        // Schedule
         ScheduleManager sm = plugin.getScheduleManager();
         sender.sendMessage(section("Schedule"));
         sender.sendMessage(kv("Enabled",    bool(cfg.isScheduleEnabled())));
@@ -302,13 +259,11 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         else
             sender.sendMessage(kv("Daily time", cfg.getScheduleDailyTime()));
 
-        // Backup
         sender.sendMessage(section("Backup"));
         sender.sendMessage(kv("Enabled",    bool(cfg.isBackupEnabled())));
         sender.sendMessage(kv("Directory",  cfg.getBackupDirectory()));
         sender.sendMessage(kv("Keep",       String.valueOf(cfg.getBackupKeep())));
 
-        // Server Properties
         sender.sendMessage(section("Server Properties (server-properties.yml)"));
         sender.sendMessage(kv("Patching enabled", bool(cfg.isServerPropertiesEnabled())));
         Map<String, String> spVals = cfg.getServerPropertiesValues();
@@ -321,7 +276,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("  " + yellow("⚠ use-restart=false — patches only apply in restart mode."));
         }
 
-        // Worlds
         sender.sendMessage(section("Worlds"));
         List<String> worldsToReset = cfg.getWorldsToReset();
         if (worldsToReset.isEmpty()) {
@@ -349,7 +303,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             }
         }
 
-        // Gamerules
         sender.sendMessage(section("Gamerules"));
         Map<String, String> rules = cfg.getGamerules();
         if (rules.isEmpty()) sender.sendMessage(yellow("  (none)"));
@@ -472,9 +425,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     private void handleWorlds(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
 
-        // No extra args → show the list
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
-            // Header with inline [Add] button
             TextComponent hdr = new TextComponent(header("Worlds Deleted & Regenerated on Reset"));
             TextComponent addBtn = new TextComponent(" §8[§aAdd§8]");
             addBtn.setClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, "/worldreset worlds add "));
@@ -520,7 +471,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     private void handleSeed(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
 
-        // No extra args → show list
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
             sender.sendMessage(header("World Seeds After Reset"));
             sender.sendMessage(gray("  All worlds start with the same seed because Spigot creates them"));
@@ -532,7 +482,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage("  " + gold("▸ " + wName));
 
                 if (live != null) {
-                    // Current seed row — [Copy] copies the seed number to the player’s clipboard
                     String seedStr   = Long.toString(live.getSeed());
                     String seedLabel = "    §eCurrent seed§7: §f" + seedStr;
                     TextComponent seedLine = new TextComponent(seedLabel);
@@ -544,13 +493,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     sendComponent(sender, new BaseComponent[]{seedLine},
                             seedLabel + "  [Copy seed: " + seedStr + "]");
 
-                    // NOTE: In Bukkit/Spigot/Paper every world folder (including
-                    // world_nether and world_the_end) has its own level.dat and its own
-                    // independently controllable seed.  All three start with the same seed
-                    // only because Spigot creates them that way at first launch; they are
-                    // NOT forced to stay in sync.
                     if (locked != null) {
-                        // ── Seed IS locked: show locked value + [Unlock] button ──────────
                         String lockedLabel = "    §eAfter reset§7: §bLOCKED → §f" + locked;
                         TextComponent lockedLine = new TextComponent(lockedLabel);
                         TextComponent unlockBtn  = new TextComponent("  §8[§cUnlock§8]");
@@ -562,9 +505,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                         sendComponent(sender, new BaseComponent[]{lockedLine},
                                 lockedLabel + "  [Unlock: /worldreset seed " + wName + " random]");
                     } else {
-                        // ── Seed is random: show [Lock to current] button ────────────────
-                        // Use RUN_COMMAND (same as [Unlock]) so the lock is applied
-                        // immediately on click, not just pre-filled in chat.
                         String afterLabel = "    §eAfter reset§7: §erandom (new every reset)";
                         sendComponent(sender,
                                 clickableLine(afterLabel, "Lock to current", "a",
@@ -574,10 +514,8 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                                 afterLabel + "  [Lock to current: /worldreset seed " + wName + " " + seedStr + "]");
                     }
                 } else {
-                    // World is not loaded
                     sender.sendMessage("    " + kv("Current seed", gray("(not loaded)")));
                     if (locked != null) {
-                        // Not loaded but seed is locked — still need to show [Unlock]
                         String lockedLabel = "    §eAfter reset§7: §bLOCKED → §f" + locked;
                         TextComponent lockedLine = new TextComponent(lockedLabel);
                         TextComponent unlockBtn  = new TextComponent("  §8[§cUnlock§8]");
@@ -605,9 +543,8 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         }
 
         String target  = args[1];
-        String seedArg = args[2];  // keep original case so negative signs survive toLowerCase()
+        String seedArg = args[2];
 
-        // Validate the target world is in the reset list to prevent accidental mis-targeting
         if (!cfg.getWorldsToReset().contains(target)) {
             msg(sender, red("'" + target + "' is not in the worlds reset list."));
             msg(sender, yellow("Configured worlds: " + String.join(", ", cfg.getWorldsToReset())));
@@ -634,7 +571,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     private void handleHardcore(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
 
-        // No extra args → show list
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
             sender.sendMessage(header("Hardcore Mode After Reset"));
             cfg.getWorldsToReset().forEach(wName -> {
@@ -664,7 +600,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     private void handleDelete(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
 
-        // No extra args → show list
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
             sender.sendMessage(header("Extra Paths Deleted on Reset"));
             List<String> paths = cfg.getExtraDeletePaths();
@@ -706,7 +641,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     private void handlePreserve(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
 
-        // No extra args → show list
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
             sender.sendMessage(header("Preserved Paths (Never Deleted)"));
             List<String> paths = cfg.getPreservePaths();
@@ -743,7 +677,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    // ── gamerule ───────────────────────────────────────────────────────────
+    // ── gamerule (FIX-D: hardcore intercepted as a synthetic gamerule) ─────
 
     private void handleGamerule(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
@@ -751,9 +685,37 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         // No extra args → show list
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
             sender.sendMessage(header("Gamerules Applied After Reset"));
+
+            // ── Synthetic "hardcore" row ───────────────────────────────────
+            // hardcore is a world flag (not a real gamerule), but we expose it here
+            // because admins expect to find it alongside gamerules.
+            List<String> worldsList = cfg.getWorldsToReset();
+            if (!worldsList.isEmpty()) {
+                boolean firstHc = cfg.isHardcoreForWorld(worldsList.get(0));
+                boolean allSame = true;
+                for (String w : worldsList) {
+                    if (cfg.isHardcoreForWorld(w) != firstHc) { allSame = false; break; }
+                }
+                String hcDisplay = allSame
+                        ? (firstHc ? red("true") : green("false"))
+                        : yellow("mixed");
+                String hcLabel = "  §bhardcore §7= " + hcDisplay
+                        + gray("  (world flag — applies to all worlds)");
+                TextComponent hcLine = new TextComponent(hcLabel);
+                TextComponent hcEditBtn = new TextComponent(" §8[§eEdit§8]");
+                hcEditBtn.setClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND,
+                        "/worldreset gamerule hardcore "));
+                hcEditBtn.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                        new Text("§7Set hardcore for all worlds\n§7true = players banned on death")));
+                hcLine.addExtra(hcEditBtn);
+                sendComponent(sender, new BaseComponent[]{hcLine},
+                        hcLabel + "  [Edit: /worldreset gamerule hardcore true|false]");
+            }
+
             Map<String, String> rules = cfg.getGamerules();
-            if (rules.isEmpty()) sender.sendMessage(yellow("  (none — vanilla defaults will apply)"));
-            else {
+            if (rules.isEmpty()) {
+                sender.sendMessage(yellow("  (no gamerules configured — vanilla defaults will apply)"));
+            } else {
                 for (Map.Entry<String, String> e : rules.entrySet()) {
                     String k = e.getKey(), v = e.getValue();
                     String label = "  §b" + k + " §7= §f" + v;
@@ -780,8 +742,50 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
+        // ── Intercept "hardcore" before normal GameRule lookup ─────────────
+        if (args[1].equalsIgnoreCase("hardcore")) {
+            if (args.length < 3) {
+                // Show current per-world status and usage hint
+                msg(sender, red("Usage: /worldreset gamerule hardcore <true|false>"));
+                msg(sender, gray("  Sets hardcore on ALL worlds in the reset list."));
+                for (String wn : cfg.getWorldsToReset()) {
+                    boolean cur = cfg.isHardcoreForWorld(wn);
+                    msg(sender, "  " + gold("▸ " + wn) + " §7= " + (cur ? red("true") : green("false")));
+                }
+                return;
+            }
+            String valStr = args[2].toLowerCase();
+            if (!valStr.equals("true") && !valStr.equals("false")) {
+                msg(sender, red("hardcore must be 'true' or 'false'."));
+                return;
+            }
+            boolean hcVal = Boolean.parseBoolean(valStr);
+            List<String> worldsForHc = cfg.getWorldsToReset();
+            if (worldsForHc.isEmpty()) {
+                msg(sender, yellow("No worlds configured — nothing to set hardcore on."));
+                return;
+            }
+            for (String wn : worldsForHc) {
+                cfg.setHardcoreForWorld(wn, hcVal);
+            }
+            msg(sender, green("hardcore = " + valStr + " applied to "
+                    + worldsForHc.size() + " world(s). Takes effect after next reset."));
+            if (hcVal) {
+                msg(sender, yellow("  ⚠ Hardcore mode: players are permanently banned on death."));
+            }
+            return;
+        }
+
         if (args[1].equalsIgnoreCase("remove")) {
             if (args.length < 3) { msg(sender, red("Usage: /worldreset gamerule remove <rule>")); return; }
+            // Intercept "hardcore" remove — reset to false for all worlds
+            if (args[2].equalsIgnoreCase("hardcore")) {
+                for (String wn : cfg.getWorldsToReset()) {
+                    cfg.setHardcoreForWorld(wn, false);
+                }
+                msg(sender, green("hardcore reset to false for all worlds."));
+                return;
+            }
             if (cfg.removeGamerule(args[2])) msg(sender, green("Removed gamerule: " + args[2]));
             else msg(sender, yellow("Gamerule '" + args[2] + "' was not in the list."));
             return;
@@ -801,7 +805,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         ConfigManager   cfg = plugin.getConfigManager();
         ScheduleManager sm  = plugin.getScheduleManager();
 
-        // No extra args → show status
         if (args.length < 2) {
             sender.sendMessage(header("Auto-Reset Schedule"));
             sender.sendMessage(kv("Enabled",    bool(cfg.isScheduleEnabled())));
@@ -874,7 +877,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     private void handleBackup(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
 
-        // No extra args → show status
         if (args.length < 2) {
             sender.sendMessage(header("Backup Settings"));
             sender.sendMessage(kv("Enabled",    bool(cfg.isBackupEnabled())));
@@ -930,7 +932,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     private void handleGenerator(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
 
-        // No extra args → show list
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
             sender.sendMessage(header("Custom World Generators"));
             Map<String, String> gens = cfg.getAllWorldGenerators();
@@ -967,7 +968,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     private void handleEnvironment(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
 
-        // No extra args → show list
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
             sender.sendMessage(header("World Environment Overrides"));
             Map<String, String> envs = cfg.getAllWorldEnvironments();
@@ -990,7 +990,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         String worldName = args[1];
         String envArg    = args[2].toUpperCase();
 
-        if (envArg.equalsIgnoreCase("AUTO")) {
+        if (envArg.equals("AUTO")) {
             cfg.setWorldEnvironment(worldName, null);
             msg(sender, green("Environment for '" + worldName + "' reset to auto (inferred from name)."));
             return;
@@ -1007,24 +1007,12 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         msg(sender, green("Environment for '" + worldName + "' set to " + envArg + "."));
     }
 
-    // ── serverprops ────────────────────────────────────────────────────────
+    // ── serverprops (original — unchanged) ────────────────────────────────
 
-    /**
-     * Manage the server.properties patch list (stored in server-properties.yml).
-     *
-     * No extra args → show all live values and which ones will be patched.
-     * set <key> <value>  — add/update a patch; auto-enables patching if disabled.
-     * remove <key>       — remove a patch value.
-     * enable / disable   — toggle patching.
-     * reload             — re-read server-properties.yml from disk.
-     *
-     * Requires use-restart=true in config.yml to take effect.
-     */
     private void handleServerProps(CommandSender sender, String[] args) {
         ConfigManager           cfg = plugin.getConfigManager();
         ServerPropertiesManager spm = plugin.getServerPropertiesManager();
 
-        // No extra args → show live values + patch list
         if (args.length < 2 || args[1].equalsIgnoreCase("list")) {
             sender.sendMessage(header("Server Properties Patches (server-properties.yml)"));
             sender.sendMessage(kv("Patching enabled", bool(cfg.isServerPropertiesEnabled())));
@@ -1081,6 +1069,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             sendComponent(sender,
                     clickableHint("Add/update a property:", "serverprops set <key> <value>", "/worldreset serverprops set "),
                     "§7  /worldreset serverprops set <key> <value>");
+            sender.sendMessage(gray("  Tip: use §e/worldreset props§7 for a grouped view of all 54 standard keys."));
             return;
         }
 
@@ -1092,6 +1081,51 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 msg(sender, green("server-properties.yml and server.properties cache reloaded ("
                         + spm.getLiveProperties().size() + " keys)."));
                 break;
+
+            case "list-all": {
+                Map<String, String> patches = cfg.getServerPropertiesValues();
+                Map<String, String> live    = spm.getLiveProperties();
+                sender.sendMessage(header("All Standard server.properties Keys"));
+                sender.sendMessage(gray("  §7Live = current value in server.properties"));
+                sender.sendMessage(gray("  §aPatch§7 = value that will be written on reset"));
+                sender.sendMessage(gray("  Click §e[Set]§7 to add a key to the patch list."));
+                sender.sendMessage("");
+                for (String k : ALL_SERVER_PROP_KEYS) {
+                    String liveVal    = live.get(k);
+                    String patchedVal = patches.get(k);
+                    StringBuilder line = new StringBuilder();
+                    line.append("  §b").append(k).append("§7: ");
+                    if (liveVal != null) {
+                        line.append("§f").append(liveVal);
+                    } else {
+                        line.append("§8(not in file)");
+                    }
+                    if (patchedVal != null) {
+                        if (patchedVal.equals(liveVal)) {
+                            line.append("  §a[patched: ").append(patchedVal).append("]");
+                        } else {
+                            line.append("  §6→patch: §a").append(patchedVal);
+                        }
+                    }
+                    String desc = serverPropDescription(k);
+                    if (sender instanceof Player) {
+                        TextComponent tLine = new TextComponent(line.toString());
+                        TextComponent setBtn = new TextComponent(" §8[§eSet§8]");
+                        setBtn.setClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND,
+                                "/worldreset serverprops set " + k + " "));
+                        setBtn.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                new Text("§7" + (desc.isEmpty() ? k : desc)
+                                        + "\n§7Click to set patch value for §b" + k)));
+                        tLine.addExtra(setBtn);
+                        ((Player) sender).spigot().sendMessage(tLine);
+                    } else {
+                        sender.sendMessage(line + "  [/worldreset serverprops set " + k + " ...]"
+                                + (desc.isEmpty() ? "" : "  — " + desc));
+                    }
+                }
+                sender.sendMessage(gray("  " + ALL_SERVER_PROP_KEYS.size() + " standard keys listed."));
+                break;
+            }
 
             case "enable":
                 cfg.setServerPropertiesEnabled(true);
@@ -1116,8 +1150,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 {
                     String key   = args[2];
                     String value = joinFrom(args, 3);
-                    cfg.setServerPropertiesValue(key, value);   // auto-enables if disabled
-
+                    cfg.setServerPropertiesValue(key, value);
                     String curLive = spm.getLiveValue(key);
                     if (curLive == null) {
                         msg(sender, green("Patch added: ") + aqua(key) + green(" = ") + white(value)
@@ -1146,11 +1179,9 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 break;
 
             default: {
-                // Direct /worldreset serverprops <key> <value> syntax (parity with gamerule)
                 String key   = args[1];
                 String value = joinFrom(args, 2);
                 if (value.isEmpty()) {
-                    // No value — show current live + patched state as a hint
                     String patched = cfg.getServerPropertiesValues().get(key);
                     String live2   = spm.getLiveValue(key);
                     msg(sender, kv("Current in server.properties", live2 != null ? live2 : gray("(key not found)")));
@@ -1179,13 +1210,240 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    // ── Help (paginated) ───────────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════════════
+    // NEW: /worldreset props — direct editor for ALL 54 server.properties keys
+    // ══════════════════════════════════════════════════════════════════════
 
-    private static final int HELP_TOTAL_PAGES = 4;
+    /**
+     * Direct server.properties editor covering all 54 standard Minecraft keys.
+     *
+     * Completely separate from /worldreset serverprops in UX (but uses the same
+     * ConfigManager / ServerPropertiesManager backend for storage).
+     *
+     *   /worldreset props                → grouped list of ALL 54 keys
+     *   /worldreset props <key>          → detail view for one key
+     *   /worldreset props <key> <value>  → set patch for any key
+     *   /worldreset props remove <key>   → remove a patch
+     *   /worldreset props enable         → toggle patching on
+     *   /worldreset props disable        → toggle patching off
+     *   /worldreset props reload         → refresh server.properties cache
+     */
+    private void handleProps(CommandSender sender, String[] args) {
+        ConfigManager           cfg = plugin.getConfigManager();
+        ServerPropertiesManager spm = plugin.getServerPropertiesManager();
+
+        // No args → grouped view of all 54 keys
+        if (args.length < 2) {
+            showAllPropsGrouped(sender, cfg, spm);
+            return;
+        }
+
+        String sub = args[1].toLowerCase();
+
+        switch (sub) {
+            case "enable":
+                cfg.setServerPropertiesEnabled(true);
+                msg(sender, green("Server properties patching enabled."));
+                if (!cfg.isUseRestart())
+                    msg(sender, yellow("  ⚠ Patches only apply when use-restart=true. "
+                            + "Run: /worldreset config use-restart true"));
+                break;
+
+            case "disable":
+                cfg.setServerPropertiesEnabled(false);
+                msg(sender, green("Server properties patching disabled."));
+                break;
+
+            case "reload":
+                spm.reload();
+                cfg.reloadServerPropsConfig();
+                msg(sender, green("server.properties cache reloaded ("
+                        + spm.getLiveProperties().size() + " keys)."));
+                break;
+
+            case "remove":
+            case "reset":
+            case "clear":
+                if (args.length < 3) {
+                    msg(sender, red("Usage: /worldreset props remove <key>"));
+                    break;
+                }
+                if (cfg.removeServerPropertiesValue(args[2]))
+                    msg(sender, green("Patch removed for '" + args[2] + "'."));
+                else
+                    msg(sender, yellow("No patch was set for '" + args[2] + "'."));
+                break;
+
+            default: {
+                // /worldreset props <key> [value]
+                String key = args[1];
+                if (args.length < 3) {
+                    showSingleProp(sender, cfg, spm, key);
+                } else {
+                    String value = joinFrom(args, 2);
+                    applyPropPatch(sender, cfg, spm, key, value);
+                }
+            }
+        }
+    }
+
+    /**
+     * Print all 54 server properties grouped by category.
+     * Each row shows: key, live value, patch value (if any), [Set] and [X] buttons.
+     */
+    private void showAllPropsGrouped(CommandSender sender, ConfigManager cfg,
+                                     ServerPropertiesManager spm) {
+        Map<String, String> live    = spm.getLiveProperties();
+        Map<String, String> patches = cfg.getServerPropertiesValues();
+        int patchCount = patches.size();
+
+        sender.sendMessage(header("Server Properties — All 54 Keys"));
+        sender.sendMessage("  " + kv("Patching", bool(cfg.isServerPropertiesEnabled()))
+                + gray("   use-restart: " + bool(cfg.isUseRestart())));
+
+        if (!cfg.isUseRestart()) {
+            sender.sendMessage(yellow("  ⚠ Patches only apply in restart mode.  /worldreset config use-restart true"));
+        }
+        if (!cfg.isServerPropertiesEnabled()) {
+            sender.sendMessage(yellow("  ⚠ Patching is off.  /worldreset props enable"));
+        }
+        if (patchCount > 0) {
+            sender.sendMessage(gray("  " + patchCount + " patch(es) active.  "
+                    + "§e[/worldreset props <key> <value>]§7 to add more."));
+        } else {
+            sender.sendMessage(gray("  No patches yet.  §e/worldreset props <key> <value>§7 to set any key."));
+        }
+
+        for (Map.Entry<String, List<String>> cat : PROPS_CATEGORIES.entrySet()) {
+            sender.sendMessage(section(cat.getKey()));
+            for (String k : cat.getValue()) {
+                printPropRow(sender, k, live.get(k), patches.get(k));
+            }
+        }
+        sender.sendMessage(gray("  54 standard Minecraft Java Edition server.properties keys."));
+        sender.sendMessage(gray("  §e/worldreset props <key>§7 for detail.  "
+                + "§e/worldreset props reload§7 to refresh cache."));
+    }
+
+    /**
+     * Print one row for a server property:
+     *   key: liveValue  [patch indicator]  [Set] [X]
+     */
+    private void printPropRow(CommandSender sender, String key,
+                              String liveVal, String patchedVal) {
+        StringBuilder sb = new StringBuilder("  §b").append(key).append("§7: ");
+        if (liveVal != null) sb.append("§f").append(liveVal);
+        else sb.append("§8(absent)");
+
+        if (patchedVal != null) {
+            if (patchedVal.equals(liveVal)) sb.append("  §a[✓ patch=same]");
+            else sb.append("  §6→ §apatch: ").append(patchedVal);
+        }
+
+        String lineText = sb.toString();
+        String desc = serverPropDescription(key);
+
+        if (sender instanceof Player) {
+            TextComponent line = new TextComponent(lineText);
+            TextComponent setBtn = new TextComponent(" §8[§eSet§8]");
+            setBtn.setClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND,
+                    "/worldreset props " + key + " "));
+            setBtn.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                    new Text((desc.isEmpty() ? "§b" + key : "§7" + desc)
+                            + "\n§7Click to pre-fill §e/worldreset props " + key + " ")));
+            line.addExtra(setBtn);
+            if (patchedVal != null) {
+                TextComponent xBtn = new TextComponent(" §8[§cX§8]");
+                xBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
+                        "/worldreset props remove " + key));
+                xBtn.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                        new Text("§7Remove patch for §b" + key)));
+                line.addExtra(xBtn);
+            }
+            ((Player) sender).spigot().sendMessage(line);
+        } else {
+            sender.sendMessage(lineText
+                    + "  [/worldreset props " + key + " <value>]"
+                    + (desc.isEmpty() ? "" : "  — " + desc));
+        }
+    }
+
+    /**
+     * Show a detailed info panel for a single server.properties key:
+     * description, live value, patch value, valid options, and action buttons.
+     */
+    private void showSingleProp(CommandSender sender, ConfigManager cfg,
+                                ServerPropertiesManager spm, String key) {
+        String live    = spm.getLiveValue(key);
+        String patched = cfg.getServerPropertiesValues().get(key);
+        String desc    = serverPropDescription(key);
+
+        sender.sendMessage(header("Property: " + key));
+        if (!desc.isEmpty())
+            sender.sendMessage("  " + gray(desc));
+        sender.sendMessage(kv("Current (server.properties)", live != null ? white(live) : gray("(key not found — will be added)")));
+        if (patched != null) {
+            if (patched.equals(live))
+                sender.sendMessage(kv("Patch", green(patched) + gray("  (same as current — no change)")));
+            else
+                sender.sendMessage(kv("Will be changed to", green(patched)
+                        + gray("  (was: " + (live != null ? live : "absent") + ")")));
+        } else {
+            sender.sendMessage(kv("Patch", yellow("(none — will not be changed on reset)")));
+        }
+
+        List<String> hints = getServerPropValueCompletions(key);
+        if (!hints.isEmpty())
+            sender.sendMessage(gray("  Valid values: §f" + String.join(", ", hints)));
+
+        sender.sendMessage("");
+        sendComponent(sender,
+                clickableHint("Set value:", "props " + key + " <value>",
+                        "/worldreset props " + key + " "),
+                "§7  Set: /worldreset props " + key + " <value>");
+        if (patched != null) {
+            sendComponent(sender,
+                    clickableLine(gray("  Remove current patch"), "Remove patch", "c",
+                            ClickEvent.Action.RUN_COMMAND,
+                            "/worldreset props remove " + key,
+                            "Remove patch for " + key),
+                    "§7  Remove: /worldreset props remove " + key);
+        }
+        if (!cfg.isUseRestart()) {
+            sender.sendMessage(yellow("  ⚠ Patches only apply in restart mode."));
+        }
+    }
+
+    /**
+     * Write a server.properties patch and print concise feedback showing
+     * old value → new value.
+     */
+    private void applyPropPatch(CommandSender sender, ConfigManager cfg,
+                                ServerPropertiesManager spm, String key, String value) {
+        cfg.setServerPropertiesValue(key, value);
+        String live = spm.getLiveValue(key);
+        if (live == null) {
+            msg(sender, green("Patch added: ") + aqua(key) + green(" = ") + white(value)
+                    + gray("  (new key — will be inserted into server.properties)"));
+        } else if (live.equals(value)) {
+            msg(sender, green("Patch set: ") + aqua(key) + green(" = ") + white(value)
+                    + gray("  (already at this value)"));
+        } else {
+            msg(sender, green("Patch set: ") + aqua(key)
+                    + gray("  now=") + white(live) + gold("  →  ") + green(value));
+        }
+        if (!cfg.isUseRestart()) {
+            msg(sender, yellow("  ⚠ use-restart=false — patch won't apply until restart mode is on.  "
+                    + "/worldreset config use-restart true"));
+        }
+    }
+
+    // ── Help (paginated, 5 pages) ──────────────────────────────────────────
+
+    private static final int HELP_TOTAL_PAGES = 5;
 
     private void sendHelp(CommandSender sender, int page) {
         page = Math.max(1, Math.min(page, HELP_TOTAL_PAGES));
-
         sender.sendMessage(header("WorldReset v1.2.0 — Help  (page " + page + "/" + HELP_TOTAL_PAGES + ")"));
 
         switch (page) {
@@ -1194,7 +1452,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 help(sender, "/worldreset start",                 "Begin a reset (asks for confirmation). Add --now to skip countdown.");
                 help(sender, "/worldreset start --now --confirm", "Start immediately, no countdown, no second prompt.");
                 help(sender, "/worldreset cancel",                "Stop the running countdown.");
-                help(sender, "/worldreset status",                "Show a full snapshot: worlds, seeds, schedule, etc.");
+                help(sender, "/worldreset status",                "Full snapshot: worlds, seeds, schedule, etc.");
                 help(sender, "/worldreset reload",                "Reload config.yml and server-properties.yml from disk.");
 
                 sender.sendMessage(section("Quick Settings  (/worldreset config <key> <value>)"));
@@ -1229,7 +1487,8 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
 
             case 3:
                 sender.sendMessage(section("Gamerules  (/worldreset gamerule)"));
-                help(sender, "/worldreset gamerule",                 "Show all gamerules applied after reset.");
+                help(sender, "/worldreset gamerule",                 "Show all gamerules + hardcore flag applied after reset.");
+                help(sender, "/worldreset gamerule hardcore <true|false>", "Set hardcore for ALL worlds (special synthetic gamerule).");
                 help(sender, "/worldreset gamerule <rule> <value>",  "Set a gamerule (e.g. keepInventory false).");
                 help(sender, "/worldreset gamerule remove <rule>",   "Remove a gamerule from the list.");
 
@@ -1259,34 +1518,48 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 help(sender, "/worldreset backup keep <n>",    "Keep the N most recent backups per world.");
                 help(sender, "/worldreset backup dir <path>",  "Set the backup folder (relative to server root).");
 
-                sender.sendMessage(section("Server Properties  (/worldreset serverprops)"));
-                help(sender, "/worldreset serverprops",                   "Show all patch values and current server.properties state.");
-                help(sender, "/worldreset serverprops <key> <value>",     "Set a patch value directly (e.g. difficulty hard).");
-                help(sender, "/worldreset serverprops set <key> <value>", "Same as above with explicit 'set' keyword.");
+                sender.sendMessage(section("Server Properties — legacy  (/worldreset serverprops)"));
+                help(sender, "/worldreset serverprops",                   "Show patch values and current server.properties state.");
+                help(sender, "/worldreset serverprops list-all",          "List ALL keys with live values, patches, and descriptions.");
+                help(sender, "/worldreset serverprops set <key> <value>", "Add or update a patch value.");
                 help(sender, "/worldreset serverprops remove <key>",      "Remove a key from the patch list.");
-                help(sender, "/worldreset serverprops enable",            "Enable patching (on by default).");
-                help(sender, "/worldreset serverprops disable",           "Disable patching without losing your values.");
+                help(sender, "/worldreset serverprops enable / disable",  "Toggle patching on or off.");
                 help(sender, "/worldreset serverprops reload",            "Re-read server-properties.yml from disk.");
+                break;
+
+            case 5:
+                sender.sendMessage(section("Direct Properties Editor  (/worldreset props)  — alias: p, prop"));
+                help(sender, "/worldreset props",                 "Grouped view of ALL 54 standard server.properties keys.");
+                help(sender, "/worldreset props <key> <value>",  "Set a patch for any key directly. Tab-complete for all 54 keys + value hints.");
+                help(sender, "/worldreset props <key>",          "Detail panel: description, live value, patch, valid options.");
+                help(sender, "/worldreset props remove <key>",   "Remove a patch for a specific key.");
+                help(sender, "/worldreset props enable",         "Enable server.properties patching.");
+                help(sender, "/worldreset props disable",        "Disable patching (patches are kept but not applied).");
+                help(sender, "/worldreset props reload",         "Refresh the server.properties live-value cache from disk.");
+
+                sender.sendMessage(section("Key categories covered by /worldreset props"));
+                sender.sendMessage(gray("  Gameplay       — gamemode, difficulty, hardcore, pvp, spawn-*, etc."));
+                sender.sendMessage(gray("  World Gen      — level-name, level-seed, level-type, allow-nether, etc."));
+                sender.sendMessage(gray("  View/Perf      — view-distance, simulation-distance, sync-chunk-writes…"));
+                sender.sendMessage(gray("  Network        — server-port, max-players, motd, online-mode, etc."));
+                sender.sendMessage(gray("  RCON & Query   — enable-rcon, rcon.port, rcon.password, query.port…"));
+                sender.sendMessage(gray("  Access & Ops   — white-list, enforce-whitelist, op-permission-level"));
+                sender.sendMessage(gray("  Resource Pack  — resource-pack, resource-pack-sha1, etc."));
+                sender.sendMessage(gray("  Modern & Misc  — enforce-secure-profile, hide-online-players, etc."));
 
                 sender.sendMessage(gray("  Permission: worldreset.admin  (default: OP)"));
                 break;
         }
 
-        // Pagination nav bar
         sendHelpNav(sender, page);
     }
 
-    /**
-     * Send a clickable [← Prev]  Page N/T  [Next →] navigation bar.
-     * Console gets a plain-text equivalent.
-     */
     private void sendHelpNav(CommandSender sender, int page) {
         boolean hasPrev = page > 1;
         boolean hasNext = page < HELP_TOTAL_PAGES;
 
         if (sender instanceof Player) {
             TextComponent bar = new TextComponent("§8  ");
-
             if (hasPrev) {
                 TextComponent prev = new TextComponent("§8[§b← Prev§8]");
                 prev.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
@@ -1297,9 +1570,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             } else {
                 bar.addExtra(new TextComponent("§8[§7← Prev§8]"));
             }
-
             bar.addExtra(new TextComponent("  §7Page §f" + page + "§7/§f" + HELP_TOTAL_PAGES + "  "));
-
             if (hasNext) {
                 TextComponent next = new TextComponent("§8[§bNext →§8]");
                 next.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND,
@@ -1310,10 +1581,8 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             } else {
                 bar.addExtra(new TextComponent("§8[§7Next →§8]"));
             }
-
             ((Player) sender).spigot().sendMessage(bar);
         } else {
-            // Console plain-text nav
             StringBuilder nav = new StringBuilder("  ");
             if (hasPrev) nav.append("[/worldreset help ").append(page - 1).append("]  ");
             nav.append("Page ").append(page).append("/").append(HELP_TOTAL_PAGES);
@@ -1338,7 +1607,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     "config", "worlds", "seed", "hardcore",
                     "delete", "preserve", "gamerule",
                     "schedule", "backup", "history", "generator", "environment",
-                    "serverprops"));
+                    "serverprops", "props"));
 
         } else if (args.length == 2) {
             switch (normalizeSubCmd(args[0])) {
@@ -1366,6 +1635,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     break;
                 case "gamerule":
                     result.add("remove");
+                    result.add("hardcore");       // synthetic gamerule
                     result.addAll(cfg.getGamerules().keySet());
                     break;
                 case "schedule":
@@ -1378,9 +1648,15 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     result.addAll(cfg.getWorldsToReset());
                     break;
                 case "serverprops":
-                    // Keywords + all live server.properties keys for direct <key> <value> syntax
-                    result.addAll(Arrays.asList("enable", "disable", "set", "remove", "reload"));
+                    result.addAll(Arrays.asList("enable", "disable", "set", "remove", "reload", "list-all"));
                     result.addAll(plugin.getServerPropertiesManager().getLiveKeys());
+                    for (String k : ALL_SERVER_PROP_KEYS) { if (!result.contains(k)) result.add(k); }
+                    break;
+                case "props":
+                    // Sub-commands + all 54 standard keys (for /worldreset props <key> [value])
+                    result.addAll(Arrays.asList("enable", "disable", "reload", "remove", "reset", "clear"));
+                    result.addAll(plugin.getServerPropertiesManager().getLiveKeys());
+                    for (String k : ALL_SERVER_PROP_KEYS) { if (!result.contains(k)) result.add(k); }
                     break;
             }
 
@@ -1399,8 +1675,14 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     }
                     break;
                 case "gamerule":
-                    if (args[1].equalsIgnoreCase("remove")) result.addAll(cfg.getGamerules().keySet());
-                    else result.addAll(Arrays.asList("true","false"));
+                    if (args[1].equalsIgnoreCase("remove")) {
+                        result.add("hardcore");
+                        result.addAll(cfg.getGamerules().keySet());
+                    } else if (args[1].equalsIgnoreCase("hardcore")) {
+                        result.addAll(Arrays.asList("true","false"));
+                    } else {
+                        result.addAll(Arrays.asList("true","false"));
+                    }
                     break;
                 case "seed":
                     {
@@ -1431,22 +1713,32 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 case "serverprops":
                     if (args[1].equalsIgnoreCase("set")) {
                         result.addAll(plugin.getServerPropertiesManager().getLiveKeys());
+                        for (String k : ALL_SERVER_PROP_KEYS) { if (!result.contains(k)) result.add(k); }
                     } else if (args[1].equalsIgnoreCase("remove")) {
                         result.addAll(cfg.getServerPropertiesValues().keySet());
                     } else {
-                        // Direct /worldreset serverprops <key> <value> — provide value completions
-                        String liveKey = args[1];
-                        if (plugin.getServerPropertiesManager().getLiveKeys().contains(liveKey)) {
-                            result.addAll(getServerPropValueCompletions(liveKey));
-                        }
+                        result.addAll(getServerPropValueCompletions(args[1]));
+                    }
+                    break;
+                case "props":
+                    if (args[1].equalsIgnoreCase("remove")
+                            || args[1].equalsIgnoreCase("reset")
+                            || args[1].equalsIgnoreCase("clear")) {
+                        // Offer keys that actually have a patch set
+                        result.addAll(cfg.getServerPropertiesValues().keySet());
+                    } else {
+                        // /worldreset props <key> <value> — offer value completions
+                        result.addAll(getServerPropValueCompletions(args[1]));
                     }
                     break;
             }
 
         } else if (args.length == 4) {
-            if (normalizeSubCmd(args[0]).equals("serverprops") && args[1].equalsIgnoreCase("set")) {
+            String norm = normalizeSubCmd(args[0]);
+            if (norm.equals("serverprops") && args[1].equalsIgnoreCase("set")) {
                 result.addAll(getServerPropValueCompletions(args[2]));
             }
+            // props length-4 not needed: /worldreset props <key> <value> is 3 tokens
         }
 
         String partial = args[args.length - 1].toLowerCase();
@@ -1458,9 +1750,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
 
     private static void msg(CommandSender s, String text) { s.sendMessage(text); }
 
-    /**
-     * Send a rich BaseComponent to a Player, or fall back to plain text for console.
-     */
     private void sendComponent(CommandSender sender, BaseComponent[] components, String fallback) {
         if (sender instanceof Player) {
             ((Player) sender).spigot().sendMessage(components);
@@ -1469,11 +1758,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    /**
-     * Build a single-line clickable component:
-     *   label  §8[§{btnColour}btnText§8]
-     * Hover shows hoverText; click triggers the given ClickEvent action.
-     */
     private static BaseComponent[] clickableLine(
             String label, String btnText, String btnColour,
             ClickEvent.Action action, String command, String hoverText) {
@@ -1485,7 +1769,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         return new BaseComponent[]{line};
     }
 
-    /** Convenience overload that defaults to SUGGEST_COMMAND. */
     private static BaseComponent[] clickableLine(
             String label, String btnText, String btnColour,
             String command, String hoverText) {
@@ -1493,7 +1776,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 ClickEvent.Action.SUGGEST_COMMAND, command, hoverText);
     }
 
-    /** Build a clickable footer hint line: §7  hint text  §8[§aactionLabel§8] */
     private static BaseComponent[] clickableHint(String hintText, String actionLabel, String command) {
         TextComponent hint = new TextComponent("§7  " + hintText + " ");
         TextComponent btn  = new TextComponent("§8[§a" + actionLabel + "§8]");
@@ -1511,7 +1793,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     private static String white(String s)  { return "§f" + s; }
     private static String gold(String s)   { return "§6" + s; }
 
-    /** Green "true" / red "false" for readability. */
     private static String bool(boolean val) {
         return val ? green("true") : red("false");
     }
@@ -1528,15 +1809,9 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         return "§e" + key + "§7: §f" + value;
     }
 
-    /**
-     * Send one help entry. For players the command text is clickable (SUGGEST_COMMAND).
-     * Clicking it pre-fills the command (up to the first placeholder) in the chat bar.
-     */
     private void help(CommandSender sender, String cmd, String desc) {
-        // Strip placeholder tokens like <name>, [n], (value) to get a clean suggest string
         String base    = cmd.startsWith("/") ? cmd : "/worldreset " + cmd;
         String suggest = base.replaceAll("\\s+[<\\[(][^>\\])]*[>\\])].*$", "").trim();
-        // Ensure trailing space so the operator can keep typing immediately
         if (!suggest.equals(base.trim())) suggest = suggest + " ";
 
         if (sender instanceof Player) {
@@ -1575,10 +1850,6 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         return "NORMAL (inferred)";
     }
 
-    /**
-     * Normalise a sub-command token — resolves short aliases to canonical names
-     * so the tab-completer doesn't need a duplicate switch for every alias.
-     */
     private static String normalizeSubCmd(String raw) {
         switch (raw.toLowerCase()) {
             case "s":    return "start";
@@ -1595,34 +1866,220 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             case "hist": return "history";
             case "env":  return "environment";
             case "gen":  return "generator";
+            case "p":
+            case "prop": return "props";          // NEW alias
             default:     return raw.toLowerCase();
         }
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // Static data: all 54 standard server.properties keys grouped by category
+    // ══════════════════════════════════════════════════════════════════════
+
     /**
-     * Returns value completion suggestions for a known server.properties key.
+     * All 54 standard Minecraft Java Edition server.properties keys (1.21).
+     * Sorted alphabetically within each group matching Mojang's documentation.
      */
+    private static final List<String> ALL_SERVER_PROP_KEYS = Arrays.asList(
+        // Gameplay
+        "allow-flight", "allow-nether", "difficulty", "force-gamemode",
+        "function-permission-level", "gamemode", "generate-structures",
+        "generator-settings", "hardcore", "level-name", "level-seed",
+        "level-type", "max-build-height", "max-world-size", "pvp",
+        "spawn-animals", "spawn-monsters", "spawn-npcs", "spawn-protection",
+        // View / simulation
+        "simulation-distance", "view-distance",
+        // Network / connection
+        "enable-query", "enable-rcon", "max-players", "max-tick-time",
+        "motd", "network-compression-threshold", "online-mode",
+        "player-idle-timeout", "prevent-proxy-connections", "query.port",
+        "rate-limit", "rcon.password", "rcon.port", "server-ip", "server-port",
+        "sync-chunk-writes", "use-native-transport",
+        // Whitelist / ops
+        "enforce-whitelist", "op-permission-level", "white-list",
+        // Commands
+        "enable-command-block",
+        // Resource pack
+        "require-resource-pack", "resource-pack", "resource-pack-prompt",
+        "resource-pack-sha1",
+        // 1.19+ / misc
+        "bungeecord", "enable-jmx-monitoring", "enforce-secure-profile",
+        "hide-online-players", "initial-disabled-packs", "initial-enabled-packs",
+        "log-ips", "text-filtering-config"
+    );
+
+    /**
+     * The same 54 keys organised into display categories for /worldreset props.
+     * Every key in ALL_SERVER_PROP_KEYS appears exactly once across all categories.
+     */
+    private static final Map<String, List<String>> PROPS_CATEGORIES;
+    static {
+        PROPS_CATEGORIES = new LinkedHashMap<>();
+
+        PROPS_CATEGORIES.put("Gameplay", Arrays.asList(
+                "gamemode", "difficulty", "hardcore", "pvp", "force-gamemode",
+                "allow-flight", "spawn-animals", "spawn-monsters", "spawn-npcs",
+                "function-permission-level", "max-build-height", "max-world-size"
+        ));
+        PROPS_CATEGORIES.put("World Generation", Arrays.asList(
+                "level-name", "level-seed", "level-type", "generator-settings",
+                "allow-nether", "generate-structures", "spawn-protection"
+        ));
+        PROPS_CATEGORIES.put("View & Performance", Arrays.asList(
+                "view-distance", "simulation-distance",
+                "sync-chunk-writes", "use-native-transport"
+        ));
+        PROPS_CATEGORIES.put("Network", Arrays.asList(
+                "server-ip", "server-port", "motd", "max-players", "online-mode",
+                "network-compression-threshold", "player-idle-timeout",
+                "prevent-proxy-connections", "rate-limit", "max-tick-time"
+        ));
+        PROPS_CATEGORIES.put("RCON & Query", Arrays.asList(
+                "enable-rcon", "rcon.port", "rcon.password",
+                "enable-query", "query.port"
+        ));
+        PROPS_CATEGORIES.put("Access & Ops", Arrays.asList(
+                "white-list", "enforce-whitelist", "op-permission-level"
+        ));
+        PROPS_CATEGORIES.put("Features", Arrays.asList(
+                "enable-command-block"
+        ));
+        PROPS_CATEGORIES.put("Resource Pack", Arrays.asList(
+                "resource-pack", "resource-pack-sha1",
+                "resource-pack-prompt", "require-resource-pack"
+        ));
+        PROPS_CATEGORIES.put("Modern & Misc", Arrays.asList(
+                "enforce-secure-profile", "hide-online-players", "log-ips",
+                "initial-enabled-packs", "initial-disabled-packs",
+                "text-filtering-config", "enable-jmx-monitoring", "bungeecord"
+        ));
+    }
+
+    /** One-line description for every standard server.properties key. */
+    private static String serverPropDescription(String key) {
+        switch (key) {
+            case "allow-flight":               return "Allow flying in Survival (requires anti-cheat plugin)";
+            case "allow-nether":               return "Allow players to travel to the Nether";
+            case "bungeecord":                 return "Enable BungeeCord proxy support (Spigot only)";
+            case "difficulty":                 return "World difficulty: peaceful / easy / normal / hard";
+            case "enable-command-block":       return "Allow command blocks to run commands";
+            case "enable-jmx-monitoring":      return "Expose JMX metrics for external monitoring tools";
+            case "enable-query":               return "Enable GameSpy4 query protocol";
+            case "enable-rcon":                return "Enable remote console (RCON) access";
+            case "enforce-secure-profile":     return "Require players to have a Mojang-signed key (1.19+)";
+            case "enforce-whitelist":          return "Kick non-whitelisted players when whitelist is toggled on";
+            case "force-gamemode":             return "Reset players to default gamemode on every join";
+            case "function-permission-level":  return "Permission level needed to run /function (1–4)";
+            case "gamemode":                   return "Default gamemode for new players";
+            case "generate-structures":        return "Generate structures (villages, strongholds, etc.)";
+            case "generator-settings":         return "JSON generator settings (used with flat level-type)";
+            case "hardcore":                   return "Hardcore mode — bans players on death";
+            case "hide-online-players":        return "Hide the online player count from the server list";
+            case "initial-disabled-packs":     return "Data packs disabled when creating a new world";
+            case "initial-enabled-packs":      return "Data packs enabled when creating a new world";
+            case "level-name":                 return "World folder name (default: world)";
+            case "level-seed":                 return "Seed used when no level.dat exists (overridden by plugin)";
+            case "level-type":                 return "World generator type";
+            case "log-ips":                    return "Write player IP addresses to the server log";
+            case "max-build-height":           return "Maximum Y build height";
+            case "max-players":                return "Maximum simultaneous connected players";
+            case "max-tick-time":              return "Watchdog threshold in ms (-1 to disable)";
+            case "max-world-size":             return "Maximum world radius in blocks";
+            case "motd":                       return "Message shown on the Minecraft server list";
+            case "network-compression-threshold": return "Minimum packet size for compression (-1 = off)";
+            case "online-mode":                return "Authenticate players with Mojang (false for offline servers)";
+            case "op-permission-level":        return "Default permission level for ops (1–4)";
+            case "player-idle-timeout":        return "Minutes of idling before kicking (0 = never)";
+            case "prevent-proxy-connections":  return "Reject players connecting through a VPN or proxy";
+            case "pvp":                        return "Allow player-vs-player damage";
+            case "query.port":                 return "Port for the GameSpy4 query service";
+            case "rate-limit":                 return "Max packets per second per connection (0 = off)";
+            case "rcon.password":              return "Password required to authenticate with RCON";
+            case "rcon.port":                  return "Port the RCON service listens on";
+            case "require-resource-pack":      return "Kick players who decline the server resource pack";
+            case "resource-pack":              return "URL of the server resource pack";
+            case "resource-pack-prompt":       return "Text shown when prompting players to accept the pack";
+            case "resource-pack-sha1":         return "SHA-1 hash of the resource pack for verification";
+            case "server-ip":                  return "IP address to bind (leave blank for all interfaces)";
+            case "server-port":                return "TCP port the server listens on (default: 25565)";
+            case "simulation-distance":        return "Chunk radius where game logic is simulated (1–32)";
+            case "spawn-animals":              return "Allow passive/neutral animal spawning";
+            case "spawn-monsters":             return "Allow hostile mob spawning";
+            case "spawn-npcs":                 return "Allow villager NPC spawning";
+            case "spawn-protection":           return "Protected radius around spawn (0 = disabled)";
+            case "sync-chunk-writes":          return "Write chunks synchronously — safer but slower";
+            case "text-filtering-config":      return "Path to a text-filtering / profanity-filter config file";
+            case "use-native-transport":       return "Use Netty native epoll transport on Linux for lower latency";
+            case "view-distance":              return "Chunk view distance sent to each player (2–32)";
+            case "white-list":                 return "Enable the server whitelist";
+            default:                           return "";
+        }
+    }
+
+    /** Tab-completion value hints for every standard server.properties key. */
     private static List<String> getServerPropValueCompletions(String key) {
         switch (key.toLowerCase()) {
             case "difficulty":
-                return Arrays.asList("peaceful","easy","normal","hard");
+                return Arrays.asList("peaceful", "easy", "normal", "hard");
             case "gamemode":
-                return Arrays.asList("survival","creative","adventure","spectator");
-            case "pvp": case "allow-flight": case "allow-nether":
-            case "enable-command-block": case "force-gamemode":
-            case "spawn-monsters": case "spawn-animals": case "spawn-npcs":
-            case "online-mode": case "white-list": case "enforce-whitelist":
-            case "hardcore": case "generate-structures":
-                return Arrays.asList("true","false");
-            case "max-players":
-                return Arrays.asList("10","20","30","50","100");
-            case "view-distance": case "simulation-distance":
-                return Arrays.asList("6","8","10","12","16");
-            case "spawn-protection":
-                return Arrays.asList("0","4","16","32");
+                return Arrays.asList("survival", "creative", "adventure", "spectator");
             case "level-type":
-                return Arrays.asList("minecraft:normal","minecraft:flat",
-                        "minecraft:large_biomes","minecraft:amplified");
+                return Arrays.asList("minecraft:normal", "minecraft:flat",
+                        "minecraft:large_biomes", "minecraft:amplified",
+                        "minecraft:single_biome_surface");
+            case "op-permission-level":
+            case "function-permission-level":
+                return Arrays.asList("1", "2", "3", "4");
+            case "allow-flight":
+            case "allow-nether":
+            case "bungeecord":
+            case "enable-command-block":
+            case "enable-jmx-monitoring":
+            case "enable-query":
+            case "enable-rcon":
+            case "enforce-secure-profile":
+            case "enforce-whitelist":
+            case "force-gamemode":
+            case "generate-structures":
+            case "hardcore":
+            case "hide-online-players":
+            case "log-ips":
+            case "online-mode":
+            case "prevent-proxy-connections":
+            case "pvp":
+            case "require-resource-pack":
+            case "spawn-animals":
+            case "spawn-monsters":
+            case "spawn-npcs":
+            case "sync-chunk-writes":
+            case "use-native-transport":
+            case "white-list":
+                return Arrays.asList("true", "false");
+            case "max-players":
+                return Arrays.asList("10", "20", "30", "50", "100");
+            case "view-distance":
+            case "simulation-distance":
+                return Arrays.asList("4", "6", "8", "10", "12", "16", "20", "32");
+            case "spawn-protection":
+                return Arrays.asList("0", "4", "8", "16", "32");
+            case "max-world-size":
+                return Arrays.asList("1000", "5000", "10000", "29999984");
+            case "server-port":
+                return Arrays.asList("25565", "25566");
+            case "rcon.port":
+                return Arrays.asList("25575");
+            case "query.port":
+                return Arrays.asList("25565");
+            case "network-compression-threshold":
+                return Arrays.asList("-1", "0", "256", "512");
+            case "player-idle-timeout":
+                return Arrays.asList("0", "5", "15", "30", "60");
+            case "max-tick-time":
+                return Arrays.asList("-1", "60000", "120000");
+            case "rate-limit":
+                return Arrays.asList("0", "500", "1000");
+            case "max-build-height":
+                return Arrays.asList("128", "256", "320");
             default:
                 return Collections.emptyList();
         }

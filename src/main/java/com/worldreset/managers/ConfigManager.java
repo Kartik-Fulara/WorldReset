@@ -493,6 +493,31 @@ public class ConfigManager {
 
     public void setDiscordWebhookUrl(String url) { cfg().set("notifications.discord-webhook", url); save(); }
 
+    /**
+     * Returns the Discord startup-notification template.
+     * Sent from WorldResetPlugin.onEnable() — both on a post-reset restart
+     * and on a normal server start when a webhook is configured.
+     *
+     * <h3>Available placeholders</h3>
+     * <pre>
+     *  {server}           — server name
+     *  {time}             — date/time of this startup
+     *  {reason}           — "World Reset" or "Normal Start"
+     *  {reset_initiator}  — player name / "Schedule" / "Vote" that triggered the reset,
+     *                       or "N/A" when {reason} is "Normal Start"
+     *  {reset_time}       — timestamp when the reset began (from the flag file),
+     *                       or "N/A" when {reason} is "Normal Start"
+     * </pre>
+     */
+    public String getDiscordStartupTemplate() {
+        String def =
+                "🟢 **Server Online** — **{server}**\n" +
+                "**Reason:** {reason}\n" +
+                "**Reset started by:** {reset_initiator}  |  **Reset began at:** {reset_time}\n" +
+                "⏰ **Online at:** {time}";
+        return cfg().getString("notifications.discord-startup-template", def);
+    }
+
     /** Seconds-remaining values at which a Discord milestone message should fire. */
     public List<Integer> getDiscordCountdownMilestones() {
         List<?> raw = cfg().getList("notifications.discord-countdown-milestones");
@@ -639,6 +664,26 @@ public class ConfigManager {
             return true;
         }
         return false;
+    }
+
+    // ── Update checker ────────────────────────────────────────────────────
+
+    /**
+     * Whether the startup version-check against GitHub is enabled.
+     * Defaults to {@code true} so new installs get update notifications
+     * without any extra configuration.
+     */
+    public boolean isUpdateCheckerEnabled() {
+        return cfg().getBoolean("update-checker.enabled", true);
+    }
+
+    /**
+     * The {@code owner/repo} slug used to build the GitHub Releases API URL.
+     * Returns an empty string when not configured, which UpdateChecker treats
+     * as "skip the check and log a warning".
+     */
+    public String getUpdateCheckerRepo() {
+        return cfg().getString("update-checker.github-repo", "");
     }
 
     // ── Internal helpers ───────────────────────────────────────────────────

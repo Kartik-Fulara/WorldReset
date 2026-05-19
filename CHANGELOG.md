@@ -7,7 +7,71 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.3.1] — Current
+## [1.4.0] — Current
+
+### Added
+- **Discord startup notification** (`WorldResetPlugin` — `onEnable()`, `ConfigManager` — `getDiscordStartupTemplate()`, `config.yml` — `notifications.discord-startup-template`) — A Discord webhook message is now sent asynchronously every time `onEnable()` fires, covering both post-reset restarts and normal server starts. The message reports _why_ the server started: `{reason}` is `"World Reset"` when the boot follows a plugin-triggered restart, or `"Normal Start"` otherwise. When the reason is a world reset, `{reset_initiator}` shows the player name, `"Schedule"`, or `"Vote"` that triggered it, and `{reset_time}` shows the timestamp at which the reset began. For normal starts both fields show `"N/A"`. The notification is non-blocking and never delays startup. Default template renders as `🟢 Server Online — {server}` with reason, initiator, and online-at timestamp.
+
+- **Post-restart context persistence** (`ResetManager` — `writePendingRestartFlag()`) — The `pending-post-reset.flag` marker file now stores two `key=value` lines (`initiator=` and `reset_time=`) rather than being an empty file. `WorldResetPlugin.onEnable()` parses these on the next startup so the reason and initiator are available to the Discord startup notification even after the JVM has fully restarted. The file is written via `PrintWriter` with `append=false` (always overwrites) and deleted immediately after being read.
+
+- **`applyPostResetSteps()` public method** (`ResetManager`) — Combines `applyGamerulesAndDifficulty()`, `applyWorldBorder()`, `applySpawn()`, whitelist disable, and post-reset console commands into a single public entry point. Called from `WorldResetPlugin.onEnable()` (post-restart path) and available for external integrations. `applyGamerulesAndDifficulty()`, `applyWorldBorder()`, and `applySpawn()` are also individually promoted from `private` to `public`.
+
+- **Eight new Discord template placeholders** (`ResetManager` — `buildDiscordMessage()`, `config.yml`) — The reset start template now covers every setting that changes on a reset:
+
+  | Placeholder | What it shows |
+  |---|---|
+  | `{hardcore}` | Per-world hardcore flag (`world: ☠ yes`, `world_nether: no`, …) |
+  | `{world_border}` | Enabled/disabled; size and center coordinates when enabled |
+  | `{spawn}` | Enabled/disabled; world name and x/y/z when enabled |
+  | `{server_props}` | Every `key=value` patch written to `server.properties` on restart |
+  | `{pre_commands}` | Commands run before the reset begins |
+  | `{post_commands}` | Commands run after the reset finishes |
+  | `{preserve_paths}` | Paths that survive the deletion |
+  | `{whitelist}` | `"enabled during reset"` or `"not changed"` |
+
+  The existing `discord-start-template` default in `config.yml` is updated to use all new and existing placeholders grouped into sections (worlds, settings applied, data cleared, commands/extras).
+
+### Fixed
+- **Gamerules, difficulty, hardcore, world border, and spawn never applied after restart-mode reset** (`ResetManager` — `writePendingRestartFlag()`, `WorldResetPlugin` — `onEnable()`) — In restart mode (`use-restart: true`), `applyGamerulesAndDifficulty()`, `applyWorldBorder()`, and `applySpawn()` were only called in the live-regeneration path. When `spigot().restart()` was issued the JVM exited immediately, and the fresh worlds loaded on the next startup with vanilla defaults regardless of what was configured. The fix writes `pending-post-reset.flag` before calling `spigot().restart()`. On the next `onEnable()`, the flag is detected, deleted, and `applyPostResetSteps()` is scheduled with a 2-tick delay (to ensure all worlds are fully loaded) before being called. The reset-complete broadcast also fires at this point so players joining after the restart see it.
+
+- **Hardcore flag not written to `level.dat` in restart mode** (`ResetManager` — `writeSeedToLevelDat()`) — The minimal gzipped NBT `level.dat` written before `spigot().restart()` previously contained only the seed fields (`RandomSeed` and `WorldGenSettings.seed`). Paper reads the `hardcore` byte from `level.dat` on world creation; since the field was absent it always defaulted to `0` (false), silently ignoring `hardcore.<worldname>` in `config.yml`. The fix adds a `TAG_Byte("hardcore", 1|0)` to the `Data` compound alongside the seed fields and introduces a `writeNbtByte()` helper alongside the existing `writeNbtLong()`. The method signature is updated to `writeSeedToLevelDat(worldName, seed, hardcore)` and all call sites pass the configured hardcore value.
+
+- **Locked seeds ignored in live-regeneration mode when `level.dat` could not be deleted** (`ResetManager` — `regenerateWorlds()`) — `regenerateWorlds()` relied solely on `WorldCreator.seed()` to apply locked seeds. In some Paper/Spigot builds, if a stale `level.dat` survived the deletion phase (file lock held by antivirus or another process), `Bukkit.createWorld()` read the old file and ignored `WorldCreator.seed()` entirely, producing a different seed each reset. The restart path already pre-wrote `level.dat` with `writeSeedToLevelDat()` as the authoritative seed source; the live-regeneration path now does the same — `writeSeedToLevelDat()` is called for every locked-seed world immediately before `Bukkit.createWorld()`. Even if the old file was not fully deleted, the pre-write overwrites it with the correct seed before Paper reads it.
+
+### Changed
+- **Discord _complete_ notification removed** (`ResetManager` — `executeReset()`) — The `discord-complete-template` webhook call has been removed from both the restart path (where it was sent synchronously before `spigot().restart()`) and the live-regeneration path. The Discord startup notification (`discord-startup-template`) now serves as the "reset finished, server is back" signal. The `discord-complete-template` key is retained in `config.yml` with a note that it is no longer sent automatically; operators who want a complete message can re-enable it via a custom post-reset command or integration.
+
+- **`hardcore` removed from `/worldreset gamerule`** (`ResetCommand` — `handleGamerule()`) — The FIX-D synthetic `hardcore` row (added in 1.3.2) has been removed from the gamerule list display, the `hardcore` intercept, and the `gamerule` tab-completion suggestions. Typing `/worldreset gamerule hardcore` now shows a one-line redirect message pointing to `/worldreset hardcore`. The help page has been updated to match and now lists `/worldreset hardcore` separately alongside the gamerule section. `hardcore` is a world flag, not a vanilla gamerule, and is already fully managed by the dedicated command added in 1.2.0.
+
+- **`sendDiscordWebhook()` promoted to `public`** (`ResetManager`) — Previously `private`. Made public so `WorldResetPlugin.onEnable()` can send the startup notification without duplicating the HTTP/JSON logic.
+
+- **`discord-start-template` default updated** (`config.yml`) — The built-in default template is rewritten to use all 23 available placeholders, grouped into four labelled sections: _Worlds_, _Settings applied after reset_, _Data cleared_, and _Commands / extras_.
+
+---
+
+## [1.3.2]
+
+### Added
+- **`/worldreset props` — direct server.properties editor** (`ResetCommand` — `handleProps()`, `showAllPropsGrouped()`, `showSingleProp()`, `applyPropPatch()`, `printPropRow()`) — A completely new sub-command (aliases: `p`, `prop`) that provides a grouped, browsable view of all 54 standard Minecraft Java Edition server.properties keys, fully separate from `/worldreset serverprops` in UX while sharing the same `ConfigManager` / `ServerPropertiesManager` backend. Running `/worldreset props` with no arguments displays every key organised into nine categories — Gameplay, World Generation, View & Performance, Network, RCON & Query, Access & Ops, Features, Resource Pack, and Modern & Misc — with live values, patch status, and clickable `[Set]` / `[X]` buttons per row. `/worldreset props <key>` opens a detail panel showing the key's description, current value in `server.properties`, the queued patch value (if any), and a list of valid options. `/worldreset props <key> <value>` sets a patch with before→after feedback. `remove`, `enable`, `disable`, and `reload` sub-commands are also supported. Tab-complete at every depth offers all 54 key names plus per-key value hints (boolean, enum, and numeric presets).
+- **`PROPS_CATEGORIES`** (`ResetCommand`) — Static `LinkedHashMap<String, List<String>>` mapping nine display-category names to their member keys. Used by `showAllPropsGrouped()` to render the grouped `/worldreset props` output. Every key in `ALL_SERVER_PROP_KEYS` appears exactly once across all categories.
+- **`hardcore` as a synthetic gamerule** (`ResetCommand` — `handleGamerule()`) — `/worldreset gamerule hardcore <true|false>` now sets the hardcore world flag for **all** worlds in the reset list via `cfg.setHardcoreForWorld()`. Previously `GameRule.getByName("hardcore")` returned `null` because `hardcore` is a world flag rather than a vanilla gamerule, causing the command to silently do nothing. The fix intercepts the literal string `"hardcore"` before the normal `GameRule` lookup, applies the value to every configured world, and prints per-world confirmation. `/worldreset gamerule remove hardcore` resets all worlds to `false`. The gamerule list display now shows a synthetic `hardcore` row at the top with live per-world state, a colour-coded value indicator, and a clickable `[Edit]` button. Tab-complete at `args.length == 2` for `gamerule` now includes `hardcore` in the suggestion list.
+- **Help page 5** (`ResetCommand` — `sendHelp()`) — New help page documents `/worldreset props` with full usage, sub-command list, and the nine key-category breakdown. `HELP_TOTAL_PAGES` updated from 4 to 5. Paginated navigation updated accordingly.
+
+### Fixed
+- **`--confirm` flag bypassed the reset safety check** (`ResetCommand` — `handleStart()`) — Running `/worldreset start --confirm` with no prior `/worldreset start` command skipped the confirmation gate entirely and fired the reset immediately. The fix validates that a `pendingConfirm` entry exists for the sender **and** has not expired before allowing `--confirm` to proceed. If no entry is found, the player receives a clear message instructing them to run `/worldreset start` first. The 30-second expiry window and expiry-notification behaviour are unchanged.
+
+### Changed
+- **`normalizeSubCmd()`** (`ResetCommand`) — Added `"p"` and `"prop"` → `"props"` alias mappings so tab-complete logic resolves the new sub-command correctly at all argument depths.
+- **`onTabComplete()`** (`ResetCommand`) — Extended at `args.length == 2` and `args.length == 3` to cover `props`: length-2 offers all 54 standard key names plus `enable`, `disable`, `reload`, `remove`, `reset`, `clear`; length-3 offers per-key value hints when a standard key is given, or the set of patched keys when `remove` / `reset` / `clear` is given.
+- **`/worldreset serverprops`** (`ResetCommand` — `handleServerProps()`) — Footer now includes a tip pointing operators to `/worldreset props` for the grouped view of all 54 keys.
+
+---
+
+## [1.3.1]
+
+### Added
+- **Update checker** (`UpdateChecker` — new class, `WorldResetPlugin` — `onEnable()`) — On startup the plugin fires a single async HTTP request to the GitHub Releases API (`GET /repos/{owner}/{repo}/releases/latest`) and compares the returned `tag_name` against the running version from `plugin.yml`. Leading `v` prefixes are stripped before comparison so `"v1.3.1"` and `"1.3.1"` always match correctly. If a newer version is found, a warning is printed to the console and any player with `worldreset.admin` is notified in-game two seconds after joining (delayed so the message is not buried in login noise). The check is fully non-blocking — the main thread is never touched. Network failures produce a single warning log line and are otherwise silent. Configured via two new `config.yml` keys: `update-checker.enabled` (default `true`) and `update-checker.github-repo` (set to `"owner/repo"` of your release repository).
+- **`isUpdateCheckerEnabled()` / `getUpdateCheckerRepo()`** (`ConfigManager`) — Two new accessor methods backing the `update-checker` config block. `getUpdateCheckerRepo()` returns an empty string when the key is absent, which `UpdateChecker` treats as "skip and warn" rather than crashing.
 
 ### Fixed
 - **Discord START notification arrives after COMPLETE** (`ResetManager` — `executeReset()`, line 284) — The START webhook was dispatched with `runTaskAsynchronously`, placing it in a thread-pool queue. COMPLETE fired synchronously on the main thread immediately after and won the race, so Discord showed messages in reverse order. START is now sent synchronously (blocking HTTP). This is acceptable because it is called exactly once, at the moment of reset confirmation, after players have already been kicked.
@@ -34,7 +98,6 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`/worldreset history` colour scheme** — `STARTED` entries now render in cyan (`§b`). Previously only `RESET` (green) and `CANCELLED` (yellow) had distinct colours; unrecognised lines fell through to grey.
 
 ---
-
 
 ## [1.2.2]
 
