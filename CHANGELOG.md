@@ -7,7 +7,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.4.1] — Current
+## [1.4.2] — Current
+
+### Fixed
+- **Missing `DataVersion` in pre-written `level.dat`** (`ResetManager` — `writeSeedToLevelDat()`) — Modern Paper (1.21+) requires a valid `DataVersion` field in the NBT Data compound; without it, the server would fail to load the world with an `Unknown data version: 0` error. Added `DataVersion: 3953` (1.21) to the pre-written NBT.
+- **Missing `api-version` in `plugin.yml`** — Added `api-version: '1.21'` to resolve the legacy plugin warning in modern Paper/Spigot versions.
+- **Missing seeds in Nether and End worlds after reset** (`ResetManager` — `writeSeedToLevelDat()`) — Nether and End worlds sometimes loaded with a zero seed or failed to allow player joins after a reset because the pre-written `level.dat` was too minimal. The fix adds essential NBT fields (`version`, `LevelName`, `Initialized`) to the pre-written `level.dat` to ensure Paper/Spigot recognizes it as a valid initialized world.
+- **Seeds not applied for random-seed worlds in live-regeneration mode** (`ResetManager` — `regenerateWorlds()`) — In live-regeneration mode (`use-restart: false`), random seeds were applied via `WorldCreator.seed()` but the `level.dat` was not being pre-overwritten. On Windows, if the old `level.dat` could not be deleted due to a file lock, Bukkit would reuse the old seed. `writeSeedToLevelDat()` is now called for *every* world in live-regeneration mode (both locked and random) to guarantee the new seed is applied.
+- **Difficulty setting ignored or case-sensitive** (`ConfigManager`, `ResetManager`) — Standardized difficulty storage to lowercase and ensured case-insensitive enum lookups when applying difficulty to worlds.
+
+### Changed
+- **`hardcore` removed as a synthetic gamerule** (`ResetCommand`) — The redundant `hardcore` intercept in `/worldreset gamerule` and its tab completions have been removed. Use the dedicated `/worldreset hardcore` command instead.
+- **Server properties subcommands** (`ResetCommand`) — Added direct subcommands for all 54 standard server properties. You can now run `/worldreset props <key> <value>` (e.g., `/worldreset p pvp false`) directly.
+- **Enhanced Discord notifications** (`ResetManager` — `buildDiscordMessage()`) — The `{server_props}` placeholder in Discord messages now automatically includes per-world settings (hardcore, environment, seeds) when they are configured, providing a complete picture of all changes in one list.
+
+---
+
+## [1.4.1] — 2026-05-19
 
 ### Fixed
 - **Missing seeds in Nether and End worlds after reset** (`ResetManager` — `writeSeedToLevelDat()`) — Nether and End worlds sometimes loaded with a zero seed or failed to allow player joins after a reset because the pre-written `level.dat` was too minimal. The fix adds essential NBT fields (`version`, `LevelName`, `Initialized`) to the pre-written `level.dat` to ensure Paper/Spigot recognizes it as a valid initialized world.

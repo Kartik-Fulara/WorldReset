@@ -1495,6 +1495,7 @@ public class ResetManager {
             writeNbtCompound(dos, "", () -> {
                 // "Data" compound
                 writeNbtCompound(dos, "Data", () -> {
+                    writeNbtInt(dos, "DataVersion", 3953); // 1.21
                     writeNbtInt(dos, "version", 19133);
                     writeNbtString(dos, "LevelName", worldName);
                     writeNbtByte(dos, "Initialized", (byte) 1);
