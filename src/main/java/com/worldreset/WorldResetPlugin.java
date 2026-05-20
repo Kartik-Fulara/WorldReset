@@ -2,8 +2,11 @@ package com.worldreset;
 
 import com.worldreset.UpdateChecker;
 import com.worldreset.commands.ResetCommand;
+import com.worldreset.integrations.WorldResetExpansion;
+import com.worldreset.gui.MenuManager;
 import com.worldreset.managers.ConfigManager;
 import com.worldreset.managers.HistoryManager;
+import com.worldreset.managers.RegionManager;
 import com.worldreset.managers.ResetManager;
 import com.worldreset.managers.ScheduleManager;
 import com.worldreset.managers.ServerPropertiesManager;
@@ -17,6 +20,8 @@ public class WorldResetPlugin extends JavaPlugin {
     private static WorldResetPlugin instance;
     private ConfigManager            configManager;
     private ResetManager             resetManager;
+    private RegionManager            regionManager;
+    private MenuManager              menuManager;
     private ScheduleManager          scheduleManager;
     private ServerPropertiesManager  serverPropertiesManager;
     private HistoryManager           historyManager;
@@ -38,8 +43,13 @@ public class WorldResetPlugin extends JavaPlugin {
         serverPropertiesManager.load();        // reads server.properties into memory
 
         historyManager  = new HistoryManager(this);
+        regionManager   = new RegionManager(this);
+        menuManager     = new MenuManager(this);
         resetManager    = new ResetManager(this);
         scheduleManager = new ScheduleManager(this);
+
+        // Register events
+        getServer().getPluginManager().registerEvents(menuManager, this);
 
         // Register /worldreset
         ResetCommand cmd = new ResetCommand(this);
@@ -142,6 +152,11 @@ public class WorldResetPlugin extends JavaPlugin {
             updateChecker.check();
         }
 
+        if (getServer().getPluginManager().getPlugin("PlaceholderAPI") != null) {
+            new WorldResetExpansion(this).register();
+            getLogger().info("PlaceholderAPI expansion registered.");
+        }
+
         getLogger().info("WorldResetPlugin v" + getDescription().getVersion() + " enabled. Type /worldreset help for commands.");
     }
 
@@ -158,7 +173,9 @@ public class WorldResetPlugin extends JavaPlugin {
     public static WorldResetPlugin   getInstance()                  { return instance; }
     public ConfigManager             getConfigManager()             { return configManager; }
     public ResetManager              getResetManager()              { return resetManager; }
-    public ScheduleManager           getScheduleManager()           { return scheduleManager; }
+    public RegionManager             getRegionManager()             { return regionManager; }
+    public MenuManager               getMenuManager()               { return menuManager; }
+    public ScheduleManager          getScheduleManager()           { return scheduleManager; }
     public ServerPropertiesManager   getServerPropertiesManager()   { return serverPropertiesManager; }
     public HistoryManager            getHistoryManager()            { return historyManager; }
     public VoteManager               getVoteManager()               { return voteManager; }

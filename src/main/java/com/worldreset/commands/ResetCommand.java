@@ -132,6 +132,12 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 if (!hasPerm(sender, "worldreset.history")) { denyPerm(sender); break; }
                 handleHistory(sender, args);
                 break;
+            case "menu":
+            case "dashboard":
+            case "gui":
+                if (!hasPerm(sender, "worldreset.use")) { denyPerm(sender); break; }
+                handleMenu(sender);
+                break;
             case "cfg":
             case "config":
                 if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
@@ -354,6 +360,14 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             }
         }
         plugin.getHistoryManager().showHistory(sender, n);
+    }
+
+    private void handleMenu(CommandSender sender) {
+        if (!(sender instanceof Player)) {
+            msg(sender, red("The GUI can only be opened by players."));
+            return;
+        }
+        plugin.getMenuManager().openDashboard((Player) sender);
     }
 
     // ── reload ─────────────────────────────────────────────────────────────
@@ -1438,6 +1452,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             case 1:
                 sender.sendMessage(section("Core"));
                 help(sender, "/worldreset start",                 "Begin a reset (asks for confirmation). Add --now to skip countdown.");
+                help(sender, "/worldreset menu",                  "Open the visual dashboard menu.");
                 help(sender, "/worldreset start --now --confirm", "Start immediately, no countdown, no second prompt.");
                 help(sender, "/worldreset cancel",                "Stop the running countdown.");
                 help(sender, "/worldreset status",                "Full snapshot: worlds, seeds, schedule, etc.");
@@ -1595,10 +1610,10 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             addIfHas(sender, result, "start",       "worldreset.start");
             addIfHas(sender, result, "cancel",      "worldreset.cancel");
             addIfHas(sender, result, "status",      "worldreset.status");
-            addIfHas(sender, result, "reload",      "worldreset.reload");
+            addIfHas(sender, result, "reload",      "worldreset.reload"); 
             addIfHas(sender, result, "history",     "worldreset.history");
-            addIfHas(sender, result, "schedule",    "worldreset.schedule");
-            addIfHas(sender, result, "backup",      "worldreset.backup");
+            addIfHas(sender, result, "menu",        "worldreset.use");
+            addIfHas(sender, result, "schedule",    "worldreset.schedule");            addIfHas(sender, result, "backup",      "worldreset.backup");
 
             // Admin-only subcommands
             if (sender.hasPermission(PERM)) {

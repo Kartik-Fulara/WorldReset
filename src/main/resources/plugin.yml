@@ -3,6 +3,7 @@ version: '1.4.7'
 api-version: '1.21'
 main: com.worldreset.WorldResetPlugin
 author: WorldResetPlugin
+softdepend: [PlaceholderAPI, WorldEdit]
 description: Full world reset with configurable gamerules, worlds, schedule, backups, and server-properties patching
 
 commands:

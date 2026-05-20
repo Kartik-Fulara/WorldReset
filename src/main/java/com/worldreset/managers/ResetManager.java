@@ -1,6 +1,8 @@
 package com.worldreset.managers;
 
 import com.worldreset.WorldResetPlugin;
+import com.worldreset.api.events.WorldResetCompleteEvent;
+import com.worldreset.api.events.WorldResetStartEvent;
 import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.*;
@@ -273,6 +275,17 @@ public class ResetManager {
      */
     private void executeReset() {
         ConfigManager cfg = plugin.getConfigManager();
+
+        // Fire API Event
+        WorldResetStartEvent startEvent = new WorldResetStartEvent(currentInitiator, cfg.getWorldsToReset());
+        Bukkit.getPluginManager().callEvent(startEvent);
+        if (startEvent.isCancelled()) {
+            log.info("World reset aborted by a plugin (WorldResetStartEvent cancelled).");
+            resetPending = false;
+            secondsLeft = 0;
+            return;
+        }
+
         log.info("=== WorldReset executing ===");
 
         // ── Discord: send START notification synchronously so it is guaranteed
@@ -319,6 +332,8 @@ public class ResetManager {
                 }
             }
         }
+
+        savePreservedRegions();
 
         // Unload worlds on the main thread using the Paper API.
         // Bukkit.unloadWorld() automatically updates the internal world registry,
@@ -426,12 +441,18 @@ public class ResetManager {
                     plugin.getHistoryManager().logReset(
                             currentInitiator, "restart",
                             plugin.getConfigManager().getWorldsToReset(), durationSecs);
+
+                    // Fire API Event (Complete)
+                    Bukkit.getPluginManager().callEvent(new WorldResetCompleteEvent(
+                            currentInitiator, "restart", plugin.getConfigManager().getWorldsToReset(), durationSecs));
+
                     lastResetCompleteMs = System.currentTimeMillis();
                     resetPending = false;
                     secondsLeft  = 0;
                 }
             } else {
                 regenerateWorlds();
+                pastePreservedRegions();
                 applyGamerulesAndDifficulty();
                 applyWorldBorder();
                 applySpawn();
@@ -462,6 +483,11 @@ public class ResetManager {
                 plugin.getHistoryManager().logReset(
                         currentInitiator, "live-regeneration",
                         cfg.getWorldsToReset(), durationSecs);
+
+                // Fire API Event (Complete)
+                Bukkit.getPluginManager().callEvent(new WorldResetCompleteEvent(
+                        currentInitiator, "live-regeneration", cfg.getWorldsToReset(), durationSecs));
+
                 lastResetCompleteMs = System.currentTimeMillis();
 
                 log.info("=== WorldReset complete ===");
@@ -527,6 +553,7 @@ public class ResetManager {
      */
     public void applyPostResetSteps() {
         ConfigManager cfg = plugin.getConfigManager();
+        pastePreservedRegions();
         applyGamerulesAndDifficulty();
         applyWorldBorder();
         applySpawn();
@@ -547,6 +574,67 @@ public class ResetManager {
         }
 
         log.info("[PostRestart] Post-reset steps applied to all worlds.");
+    }
+
+    // ── WorldEdit Region Preservation ──────────────────────────────────────
+
+    private void savePreservedRegions() {
+        ConfigManager cfg = plugin.getConfigManager();
+        if (!cfg.isRegionsEnabled()) return;
+
+        for (Map<?, ?> map : cfg.getPreservedRegions()) {
+            try {
+                String name = (String) map.get("name");
+                String worldName = (String) map.get("world");
+                World world = Bukkit.getWorld(worldName);
+                if (world == null) {
+                    log.warning("Region '" + name + "' world '" + worldName + "' not found. Skipping save.");
+                    continue;
+                }
+
+                Map<?, ?> minMap = (Map<?, ?>) map.get("min");
+                Map<?, ?> maxMap = (Map<?, ?>) map.get("max");
+
+                Location min = new Location(world, (double) minMap.get("x"), (double) minMap.get("y"), (double) minMap.get("z"));
+                Location max = new Location(world, (double) maxMap.get("x"), (double) maxMap.get("y"), (double) maxMap.get("z"));
+
+                if (plugin.getRegionManager().saveRegion(name, min, max)) {
+                    log.info("Region '" + name + "' saved successfully.");
+                } else {
+                    log.warning("Region '" + name + "' failed to save.");
+                }
+            } catch (Exception e) {
+                log.warning("Failed to parse region for saving: " + e.getMessage());
+            }
+        }
+    }
+
+    private void pastePreservedRegions() {
+        ConfigManager cfg = plugin.getConfigManager();
+        if (!cfg.isRegionsEnabled()) return;
+
+        for (Map<?, ?> map : cfg.getPreservedRegions()) {
+            try {
+                String name = (String) map.get("name");
+                String worldName = (String) map.get("world");
+                World world = Bukkit.getWorld(worldName);
+                if (world == null) {
+                    log.warning("Region '" + name + "' world '" + worldName + "' not found. Skipping paste.");
+                    continue;
+                }
+
+                Map<?, ?> pasteMap = (Map<?, ?>) map.get("paste_at");
+                Location target = new Location(world, (double) pasteMap.get("x"), (double) pasteMap.get("y"), (double) pasteMap.get("z"));
+
+                if (plugin.getRegionManager().pasteRegion(name, target)) {
+                    log.info("Region '" + name + "' pasted successfully.");
+                } else {
+                    log.warning("Region '" + name + "' failed to paste.");
+                }
+            } catch (Exception e) {
+                log.warning("Failed to parse region for pasting: " + e.getMessage());
+            }
+        }
     }
 
     // ── File operations ────────────────────────────────────────────────────
