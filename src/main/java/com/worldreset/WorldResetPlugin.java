@@ -43,7 +43,9 @@ public class WorldResetPlugin extends JavaPlugin {
         serverPropertiesManager.load();        // reads server.properties into memory
 
         historyManager  = new HistoryManager(this);
-        regionManager   = new RegionManager(this);
+        if (getServer().getPluginManager().getPlugin("WorldEdit") != null) {
+            regionManager = new RegionManager(this);
+        }
         menuManager     = new MenuManager(this);
         resetManager    = new ResetManager(this);
         scheduleManager = new ScheduleManager(this);

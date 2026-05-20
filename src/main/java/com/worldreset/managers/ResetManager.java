@@ -579,6 +579,7 @@ public class ResetManager {
     // ── WorldEdit Region Preservation ──────────────────────────────────────
 
     private void savePreservedRegions() {
+        if (plugin.getRegionManager() == null) return;
         ConfigManager cfg = plugin.getConfigManager();
         if (!cfg.isRegionsEnabled()) return;
 
@@ -610,6 +611,7 @@ public class ResetManager {
     }
 
     private void pastePreservedRegions() {
+        if (plugin.getRegionManager() == null) return;
         ConfigManager cfg = plugin.getConfigManager();
         if (!cfg.isRegionsEnabled()) return;
 
