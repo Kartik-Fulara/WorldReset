@@ -142,7 +142,7 @@ public class WorldResetPlugin extends JavaPlugin {
             updateChecker.check();
         }
 
-        getLogger().info("WorldResetPlugin v1.2.0 enabled. Type /worldreset help for commands.");
+        getLogger().info("WorldResetPlugin v" + getDescription().getVersion() + " enabled. Type /worldreset help for commands.");
     }
 
     @Override

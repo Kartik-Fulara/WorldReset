@@ -586,13 +586,14 @@ public class ResetManager {
         ConfigManager cfg     = plugin.getConfigManager();
         List<String>  preserve = cfg.getPreservePaths();
         File          root    = serverRoot();
+        File          worldContainer = Bukkit.getWorldContainer();
 
         for (String worldName : cfg.getWorldsToReset()) {
-            File worldDir = new File(root, worldName);
+            File worldDir = new File(worldContainer, worldName);
             File levelDat = new File(worldDir, "level.dat");
 
             if (!worldDir.exists()) {
-                log.info("World folder not found (nothing to delete): " + worldName);
+                log.info("World folder not found (nothing to delete): " + worldName + " in " + worldContainer.getPath());
                 continue;
             }
 
@@ -733,6 +734,7 @@ public class ResetManager {
     private void backupWorlds() {
         ConfigManager cfg       = plugin.getConfigManager();
         File          root      = serverRoot();
+        File          worldContainer = Bukkit.getWorldContainer();
         File          backupDir = new File(root, cfg.getBackupDirectory());
         if (!backupDir.mkdirs() && !backupDir.isDirectory()) {
             log.severe("Cannot create backup directory: " + backupDir.getAbsolutePath());
@@ -742,7 +744,7 @@ public class ResetManager {
         String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
 
         for (String worldName : cfg.getWorldsToReset()) {
-            File worldDir = new File(root, worldName);
+            File worldDir = new File(worldContainer, worldName);
             if (!worldDir.exists()) continue;
 
             File zipFile = new File(backupDir, worldName + "_" + timestamp + ".zip");
@@ -854,9 +856,10 @@ public class ResetManager {
      */
     private void regenerateWorlds() {
         ConfigManager cfg = plugin.getConfigManager();
+        File worldContainer = Bukkit.getWorldContainer();
 
         for (String worldName : cfg.getWorldsToReset()) {
-            File worldDir = new File(serverRoot(), worldName);
+            File worldDir = new File(worldContainer, worldName);
             File levelDat = new File(worldDir, "level.dat");
 
             if (levelDat.exists()) {
@@ -1549,7 +1552,7 @@ public class ResetManager {
      * @param hardcore   whether to flag the world as hardcore
      */
     private void writeSeedToLevelDat(String worldName, long seed, boolean hardcore) {
-        File worldDir = new File(serverRoot(), worldName);
+        File worldDir = new File(Bukkit.getWorldContainer(), worldName);
         worldDir.mkdirs();
         File levelDat = new File(worldDir, "level.dat");
 

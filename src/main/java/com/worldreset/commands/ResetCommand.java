@@ -133,25 +133,58 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 handleHistory(sender, args);
                 break;
             case "cfg":
-            case "config":      handleConfig(sender, args);          break;
+            case "config":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleConfig(sender, args);
+                break;
             case "w":
-            case "worlds":      handleWorlds(sender, args);          break;
-            case "seed":        handleSeed(sender, args);            break;
-            case "hardcore":    handleHardcore(sender, args);        break;
-            case "delete":      handleDelete(sender, args);          break;
-            case "preserve":    handlePreserve(sender, args);        break;
+            case "worlds":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleWorlds(sender, args);
+                break;
+            case "seed":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleSeed(sender, args);
+                break;
+            case "hardcore":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleHardcore(sender, args);
+                break;
+            case "delete":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleDelete(sender, args);
+                break;
+            case "preserve":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handlePreserve(sender, args);
+                break;
             case "gr":
-            case "gamerule":    handleGamerule(sender, args);        break;
+            case "gamerule":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleGamerule(sender, args);
+                break;
             case "gen":
-            case "generator":   handleGenerator(sender, args);       break;
+            case "generator":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleGenerator(sender, args);
+                break;
             case "env":
-            case "environment": handleEnvironment(sender, args);     break;
+            case "environment":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleEnvironment(sender, args);
+                break;
             case "sp":
-            case "serverprops": handleServerProps(sender, args);     break;
+            case "serverprops":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleServerProps(sender, args);
+                break;
             // ── NEW: direct server-properties editor ─────────────────────
             case "p":
             case "prop":
-            case "props":       handleProps(sender, args);           break;
+            case "props":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleProps(sender, args);
+                break;
             default:
                 msg(sender, red("Unknown sub-command. Type /worldreset help to see all commands."));
         }
@@ -333,7 +366,8 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         }
         plugin.getConfigManager().reload();
         plugin.getScheduleManager().restart();
-        msg(sender, green("config.yml, server-properties.yml, and advanced.yml reloaded. Schedule restarted."));
+        plugin.getServerPropertiesManager().reload();
+        msg(sender, green("config.yml, server-properties.yml, and advanced.yml reloaded. Schedule restarted. Cache refreshed."));
     }
 
     // ── config ─────────────────────────────────────────────────────────────
@@ -1398,7 +1432,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
 
     private void sendHelp(CommandSender sender, int page) {
         page = Math.max(1, Math.min(page, HELP_TOTAL_PAGES));
-        sender.sendMessage(header("WorldReset v1.2.0 — Help  (page " + page + "/" + HELP_TOTAL_PAGES + ")"));
+        sender.sendMessage(header("WorldReset v" + plugin.getDescription().getVersion() + " — Help  (page " + page + "/" + HELP_TOTAL_PAGES + ")"));
 
         switch (page) {
             case 1:
@@ -1549,135 +1583,177 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command cmd,
                                       String alias, String[] args) {
-        if (!sender.hasPermission(PERM)) return Collections.emptyList();
+        if (!sender.hasPermission(PERM) && !sender.hasPermission("worldreset.use")) {
+            return Collections.emptyList();
+        }
 
         List<String> result = new ArrayList<>();
         ConfigManager cfg = plugin.getConfigManager();
 
         if (args.length == 1) {
-            result.addAll(Arrays.asList(
-                    "help", "start", "cancel", "status", "reload",
-                    "config", "worlds", "seed", "hardcore",
-                    "delete", "preserve", "gamerule",
-                    "schedule", "backup", "history", "generator", "environment",
-                    "serverprops", "props"));
+            addIfHas(sender, result, "help",        "worldreset.use");
+            addIfHas(sender, result, "start",       "worldreset.start");
+            addIfHas(sender, result, "cancel",      "worldreset.cancel");
+            addIfHas(sender, result, "status",      "worldreset.status");
+            addIfHas(sender, result, "reload",      "worldreset.reload");
+            addIfHas(sender, result, "history",     "worldreset.history");
+            addIfHas(sender, result, "schedule",    "worldreset.schedule");
+            addIfHas(sender, result, "backup",      "worldreset.backup");
+
+            // Admin-only subcommands
+            if (sender.hasPermission(PERM)) {
+                result.addAll(Arrays.asList(
+                        "config", "worlds", "seed", "hardcore", "delete", "preserve",
+                        "gamerule", "generator", "environment",
+                        "serverprops", "props"));
+            }
 
         } else if (args.length == 2) {
-            switch (normalizeSubCmd(args[0])) {
+            String sub = normalizeSubCmd(args[0]);
+            switch (sub) {
                 case "help":
                     for (int i = 1; i <= HELP_TOTAL_PAGES; i++) result.add(String.valueOf(i));
                     break;
                 case "start":
-                    result.addAll(Arrays.asList("--now", "--confirm", "--now --confirm"));
+                    if (hasPerm(sender, "worldreset.start")) {
+                        result.addAll(Arrays.asList("--now", "--confirm"));
+                    }
                     break;
                 case "config":
-                    result.addAll(Arrays.asList("countdown", "interval", "kick-msg", "difficulty",
-                            "use-restart", "delete-async", "whitelist-during-reset"));
+                    if (sender.hasPermission(PERM)) {
+                        result.addAll(Arrays.asList("countdown", "interval", "kick-msg", "difficulty",
+                                "use-restart", "delete-async", "whitelist-during-reset"));
+                    }
                     break;
                 case "worlds":
-                    result.addAll(Arrays.asList("add", "remove"));
+                    if (sender.hasPermission(PERM)) result.addAll(Arrays.asList("add", "remove"));
                     break;
                 case "seed":
-                    result.addAll(cfg.getWorldsToReset());
+                    if (sender.hasPermission(PERM)) result.addAll(cfg.getWorldsToReset());
                     break;
                 case "hardcore":
-                    result.addAll(cfg.getWorldsToReset());
+                    if (sender.hasPermission(PERM)) result.addAll(cfg.getWorldsToReset());
                     break;
                 case "delete": case "preserve":
-                    result.addAll(Arrays.asList("add", "remove"));
+                    if (sender.hasPermission(PERM)) result.addAll(Arrays.asList("add", "remove"));
                     break;
                 case "gamerule":
-                    result.add("remove");
-                    result.addAll(cfg.getGamerules().keySet());
+                    if (sender.hasPermission(PERM)) {
+                        result.add("remove");
+                        result.addAll(cfg.getGamerules().keySet());
+                    }
                     break;
                 case "schedule":
-                    result.addAll(Arrays.asList("enable", "disable", "mode", "interval", "daily"));
+                    if (hasPerm(sender, "worldreset.schedule")) {
+                        result.addAll(Arrays.asList("enable", "disable", "mode", "interval", "daily"));
+                    }
                     break;
                 case "backup":
-                    result.addAll(Arrays.asList("now", "enable", "disable", "keep", "dir"));
+                    if (hasPerm(sender, "worldreset.backup")) {
+                        result.addAll(Arrays.asList("now", "enable", "disable", "keep", "dir"));
+                    }
                     break;
                 case "generator": case "environment":
-                    result.addAll(cfg.getWorldsToReset());
+                    if (sender.hasPermission(PERM)) result.addAll(cfg.getWorldsToReset());
                     break;
                 case "serverprops":
-                    result.addAll(Arrays.asList("enable", "disable", "set", "remove", "reload", "list-all"));
-                    result.addAll(plugin.getServerPropertiesManager().getLiveKeys());
-                    for (String k : ALL_SERVER_PROP_KEYS) { if (!result.contains(k)) result.add(k); }
+                    if (sender.hasPermission(PERM)) {
+                        result.addAll(Arrays.asList("enable", "disable", "set", "remove", "reload", "list-all"));
+                        result.addAll(plugin.getServerPropertiesManager().getLiveKeys());
+                        for (String k : ALL_SERVER_PROP_KEYS) { if (!result.contains(k)) result.add(k); }
+                    }
                     break;
                 case "props":
-                    // Sub-commands + all 54 standard keys (for /worldreset props <key> [value])
-                    result.addAll(Arrays.asList("enable", "disable", "reload", "remove", "reset", "clear"));
-                    result.addAll(plugin.getServerPropertiesManager().getLiveKeys());
-                    for (String k : ALL_SERVER_PROP_KEYS) { if (!result.contains(k)) result.add(k); }
+                    if (sender.hasPermission(PERM)) {
+                        result.addAll(Arrays.asList("enable", "disable", "reload", "remove", "reset", "clear"));
+                        result.addAll(plugin.getServerPropertiesManager().getLiveKeys());
+                        for (String k : ALL_SERVER_PROP_KEYS) { if (!result.contains(k)) result.add(k); }
+                    }
                     break;
             }
 
         } else if (args.length == 3) {
-            switch (normalizeSubCmd(args[0])) {
+            String sub = normalizeSubCmd(args[0]);
+            switch (sub) {
+                case "start":
+                    if (hasPerm(sender, "worldreset.start")) {
+                        if (args[1].equalsIgnoreCase("--now")) result.add("--confirm");
+                        if (args[1].equalsIgnoreCase("--confirm")) result.add("--now");
+                    }
+                    break;
                 case "config":
-                    switch (args[1].toLowerCase()) {
-                        case "difficulty":
-                            result.addAll(Arrays.asList("PEACEFUL","EASY","NORMAL","HARD")); break;
-                        case "use-restart": case "delete-async": case "whitelist-during-reset":
-                            result.addAll(Arrays.asList("true","false")); break;
-                        case "countdown":
-                            result.addAll(Arrays.asList("0","5","10","30","60")); break;
-                        case "interval":
-                            result.addAll(Arrays.asList("5","10","30")); break;
+                    if (sender.hasPermission(PERM)) {
+                        switch (args[1].toLowerCase()) {
+                            case "difficulty":
+                                result.addAll(Arrays.asList("PEACEFUL","EASY","NORMAL","HARD")); break;
+                            case "use-restart": case "delete-async": case "whitelist-during-reset":
+                                result.addAll(Arrays.asList("true","false")); break;
+                            case "countdown":
+                                result.addAll(Arrays.asList("0","5","10","30","60")); break;
+                            case "interval":
+                                result.addAll(Arrays.asList("5","10","30")); break;
+                        }
                     }
                     break;
                 case "gamerule":
-                    if (args[1].equalsIgnoreCase("remove")) {
-                        result.addAll(cfg.getGamerules().keySet());
-                    } else {
-                        result.addAll(Arrays.asList("true","false"));
+                    if (sender.hasPermission(PERM)) {
+                        if (args[1].equalsIgnoreCase("remove")) {
+                            result.addAll(cfg.getGamerules().keySet());
+                        } else {
+                            result.addAll(Arrays.asList("true","false"));
+                        }
                     }
                     break;
                 case "seed":
-                    {
+                    if (sender.hasPermission(PERM)) {
                         World w = Bukkit.getWorld(args[1]);
                         if (w != null) result.add(Long.toString(w.getSeed()));
                         result.add("random");
                     }
                     break;
                 case "worlds":
-                    if (args[1].equalsIgnoreCase("remove")) result.addAll(cfg.getWorldsToReset());
+                    if (sender.hasPermission(PERM) && args[1].equalsIgnoreCase("remove"))
+                        result.addAll(cfg.getWorldsToReset());
                     break;
                 case "delete":
-                    if (args[1].equalsIgnoreCase("remove")) result.addAll(cfg.getExtraDeletePaths());
+                    if (sender.hasPermission(PERM) && args[1].equalsIgnoreCase("remove"))
+                        result.addAll(cfg.getExtraDeletePaths());
                     break;
                 case "preserve":
-                    if (args[1].equalsIgnoreCase("remove")) result.addAll(cfg.getPreservePaths());
+                    if (sender.hasPermission(PERM) && args[1].equalsIgnoreCase("remove"))
+                        result.addAll(cfg.getPreservePaths());
                     break;
                 case "schedule":
-                    if (args[1].equalsIgnoreCase("mode"))
+                    if (hasPerm(sender, "worldreset.schedule") && args[1].equalsIgnoreCase("mode"))
                         result.addAll(Arrays.asList("interval","daily"));
                     break;
                 case "environment":
-                    result.addAll(Arrays.asList("NORMAL","NETHER","THE_END","auto"));
+                    if (sender.hasPermission(PERM)) result.addAll(Arrays.asList("NORMAL","NETHER","THE_END","auto"));
                     break;
                 case "generator":
-                    result.add("vanilla");
+                    if (sender.hasPermission(PERM)) result.add("vanilla");
                     break;
                 case "serverprops":
-                    if (args[1].equalsIgnoreCase("set")) {
-                        result.addAll(plugin.getServerPropertiesManager().getLiveKeys());
-                        for (String k : ALL_SERVER_PROP_KEYS) { if (!result.contains(k)) result.add(k); }
-                    } else if (args[1].equalsIgnoreCase("remove")) {
-                        result.addAll(cfg.getServerPropertiesValues().keySet());
-                    } else {
-                        result.addAll(getServerPropValueCompletions(args[1]));
+                    if (sender.hasPermission(PERM)) {
+                        if (args[1].equalsIgnoreCase("set")) {
+                            result.addAll(plugin.getServerPropertiesManager().getLiveKeys());
+                            for (String k : ALL_SERVER_PROP_KEYS) { if (!result.contains(k)) result.add(k); }
+                        } else if (args[1].equalsIgnoreCase("remove")) {
+                            result.addAll(cfg.getServerPropertiesValues().keySet());
+                        } else {
+                            result.addAll(getServerPropValueCompletions(args[1]));
+                        }
                     }
                     break;
                 case "props":
-                    if (args[1].equalsIgnoreCase("remove")
-                            || args[1].equalsIgnoreCase("reset")
-                            || args[1].equalsIgnoreCase("clear")) {
-                        // Offer keys that actually have a patch set
-                        result.addAll(cfg.getServerPropertiesValues().keySet());
-                    } else {
-                        // /worldreset props <key> <value> — offer value completions
-                        result.addAll(getServerPropValueCompletions(args[1]));
+                    if (sender.hasPermission(PERM)) {
+                        if (args[1].equalsIgnoreCase("remove")
+                                || args[1].equalsIgnoreCase("reset")
+                                || args[1].equalsIgnoreCase("clear")) {
+                            result.addAll(cfg.getServerPropertiesValues().keySet());
+                        } else {
+                            result.addAll(getServerPropValueCompletions(args[1]));
+                        }
                     }
                     break;
             }
@@ -1685,14 +1761,19 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
         } else if (args.length == 4) {
             String norm = normalizeSubCmd(args[0]);
             if (norm.equals("serverprops") && args[1].equalsIgnoreCase("set")) {
-                result.addAll(getServerPropValueCompletions(args[2]));
+                if (sender.hasPermission(PERM)) {
+                    result.addAll(getServerPropValueCompletions(args[2]));
+                }
             }
-            // props length-4 not needed: /worldreset props <key> <value> is 3 tokens
         }
 
         String partial = args[args.length - 1].toLowerCase();
         result.removeIf(s -> !s.toLowerCase().startsWith(partial));
         return result;
+    }
+
+    private void addIfHas(CommandSender sender, List<String> result, String sub, String perm) {
+        if (hasPerm(sender, perm)) result.add(sub);
     }
 
     // ── Formatting helpers ─────────────────────────────────────────────────

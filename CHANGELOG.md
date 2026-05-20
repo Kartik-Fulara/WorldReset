@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.4.7] — 2026-05-20
+### Fixed
+- Added missing `worldreset.admin` permission checks for several sensitive subcommands in `/worldreset`.
+- Improved tab completion logic to be more inclusive of players with specific permissions.
+- Added support for flags like `--now` and `--confirm` in tab completion for the `start` command.
+- Updated `ResetManager` to use `Bukkit.getWorldContainer()` for more reliable world folder resolution across different server environments.
+- Fixed version display in `/worldreset help` and startup logs to dynamically use the plugin's description.
+- Ensured `/worldreset reload` refreshes the `server.properties` cache.
+
 ## [1.4.6] — Current
 
 ### Enhanced
