@@ -1,0 +1,17 @@
+# Workflow Configuration for WorldResetPlugin
+
+# Deployment settings
+deploy:
+  owner: "DeployOwner" # Placeholder - update to real owner
+  repo: "DeployRepo"   # Placeholder - update to real repo
+  event_type: "trigger-deploy"
+
+# Build settings
+build:
+  artifact_name: "worldresetplugin-artifact"
+  retention_days: 7
+
+# Language specific overrides (optional)
+java:
+  version: "17"
+  distribution: "temurin"

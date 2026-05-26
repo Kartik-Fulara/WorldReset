@@ -1,10 +1,12 @@
 package com.worldreset.managers;
 
 import com.worldreset.WorldResetPlugin;
+import com.worldreset.utils.CronParser;
 import org.bukkit.Bukkit;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.time.DateTimeException;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.logging.Logger;
@@ -12,7 +14,7 @@ import java.util.logging.Logger;
 /**
  * Drives the optional auto-reset schedule.
  *
- * Two modes are supported:
+ * Three modes are supported:
  * <ul>
  *   <li><b>interval</b> — fires a reset every N seconds (configured via
  *       {@code schedule.interval-seconds}).  A safety floor applies —
@@ -20,6 +22,8 @@ import java.util.logging.Logger;
  *   <li><b>daily</b>    — fires once per day at a wall-clock time (HH:MM)
  *       in the timezone set by {@code schedule.timezone} (default UTC).
  *       Configured via {@code schedule.daily-time}.</li>
+ *   <li><b>cron</b>     — fires based on a standard 5-field CRON expression
+ *       (configured via {@code schedule.cron}).</li>
  * </ul>
  *
  * The schedule is restarted automatically when the plugin reloads
@@ -55,8 +59,9 @@ public class ScheduleManager {
     private int  dailyTargetMin   = -1;
     /** Resolved ZoneId for daily mode. */
     private ZoneId dailyZone      = ZoneId.of("UTC");
-    /** Current schedule mode: "interval", "daily", or "" when stopped. */
+    /** Current schedule mode: "interval", "daily", "cron", or "" when stopped. */
     private String activeMode     = "";
+    private CronParser cronParser = null;
 
     public ScheduleManager(WorldResetPlugin plugin) {
         this.plugin = plugin;
@@ -82,9 +87,12 @@ public class ScheduleManager {
             case "daily":
                 startDaily(cfg);
                 break;
+            case "cron":
+                startCron(cfg);
+                break;
             default:
                 log.warning("Unknown schedule mode '" + mode
-                        + "'. Valid values: interval, daily. Schedule disabled.");
+                        + "'. Valid values: interval, daily, cron. Schedule disabled.");
                 activeMode = "";
         }
     }
@@ -139,6 +147,10 @@ public class ScheduleManager {
             return now.isBefore(target)
                     ? "today at " + timeStr + " (" + dailyZone.getId() + ")"
                     : "tomorrow at " + timeStr + " (" + dailyZone.getId() + ")";
+        }
+
+        if ("cron".equals(activeMode)) {
+            return "via CRON: " + plugin.getConfigManager().getScheduleCron();
         }
 
         return "(unknown)";
@@ -226,6 +238,32 @@ public class ScheduleManager {
 
         log.info("Schedule: auto-reset daily at " + timeStr
                 + " " + zone.getId() + " (daily mode).");
+    }
+
+    private void startCron(ConfigManager cfg) {
+        String cron = cfg.getScheduleCron();
+        try {
+            cronParser = new CronParser(cron);
+            dailyZone = ZoneId.of(cfg.getScheduleTimezone());
+
+            task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+                LocalDateTime now = LocalDateTime.now(dailyZone);
+                int minuteKey = now.getHour() * 60 + now.getMinute();
+
+                if (minuteKey != lastDailyMinuteFired && cronParser.matches(now)) {
+                    lastDailyMinuteFired = minuteKey;
+                    log.info("[Schedule] CRON match detected (" + cron + ") — triggering reset.");
+                    fireTrigger();
+                } else if (minuteKey != lastDailyMinuteFired) {
+                    lastDailyMinuteFired = -1; // Reset for next minute check
+                }
+            }, 100L, DAILY_CHECK_TICKS);
+
+            log.info("Schedule started in CRON mode: " + cron);
+        } catch (Exception e) {
+            log.severe("Failed to start CRON schedule: " + e.getMessage());
+            activeMode = "";
+        }
     }
 
     // ── Internal trigger ───────────────────────────────────────────────────

@@ -50,13 +50,13 @@ import java.util.*;
  */
 public class ResetCommand implements CommandExecutor, TabCompleter {
 
-    private static final String PERM              = "worldreset.admin";
-    private static final long   CONFIRM_EXPIRE_MS = 30_000L;
+    public static final String PERM              = "worldreset.admin";
+    public static final long   CONFIRM_EXPIRE_MS = 30_000L;
 
     private final WorldResetPlugin plugin;
 
     /** Pending confirmation state: key = player UUID / "CONSOLE", value = timestamp. */
-    private final Map<String, Long> pendingConfirm = new HashMap<>();
+    public final Map<String, Long> pendingConfirm = new HashMap<>();
 
     public ResetCommand(WorldResetPlugin plugin) {
         this.plugin = plugin;
@@ -200,56 +200,10 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     // ── start (FIX-C: --confirm bypass patched) ───────────────────────────
 
     private void handleStart(CommandSender sender, String[] args) {
-        ResetManager rm = plugin.getResetManager();
-        if (rm.isResetPending()) {
-            msg(sender, yellow("A reset is already in progress. Use /worldreset cancel to stop it."));
-            return;
-        }
-
         boolean now     = hasFlag(args, "--now");
         boolean confirm = hasFlag(args, "--confirm");
 
-        String senderKey = sender instanceof Player
-                ? ((Player) sender).getUniqueId().toString()
-                : "CONSOLE";
-
-        if (confirm) {
-            // FIX-C: Validate a pending confirmation actually exists and hasn't expired.
-            // Previously, --confirm with no prior command bypassed the safety check entirely.
-            Long prev  = pendingConfirm.get(senderKey);
-            long nowMs = System.currentTimeMillis();
-            if (prev == null || nowMs - prev > CONFIRM_EXPIRE_MS) {
-                msg(sender, red("No pending confirmation — run /worldreset start first, then confirm within 30s."));
-                pendingConfirm.remove(senderKey);
-                return;
-            }
-            pendingConfirm.remove(senderKey);
-        } else {
-            long nowMs = System.currentTimeMillis();
-            Long prev  = pendingConfirm.get(senderKey);
-
-            if (prev == null || nowMs - prev > CONFIRM_EXPIRE_MS) {
-                if (prev != null && nowMs - prev > CONFIRM_EXPIRE_MS) {
-                    msg(sender, red("[RESET] Your confirmation expired. Run the command again to confirm."));
-                }
-                pendingConfirm.put(senderKey, nowMs);
-                msg(sender, red("⚠  WARNING: This will permanently delete and regenerate the world!"));
-                msg(sender, yellow("Run the same command again within 30 seconds to confirm:"));
-                msg(sender, aqua("  " + (now ? "/worldreset start --now --confirm" : "/worldreset start --confirm")));
-                return;
-            }
-            pendingConfirm.remove(senderKey);
-        }
-
-        String initiator = sender instanceof Player ? sender.getName() : "Console";
-        rm.startReset(initiator, now);
-
-        if (now) {
-            msg(sender, green("Reset triggered immediately."));
-        } else {
-            int secs = plugin.getConfigManager().getCountdown();
-            msg(sender, green("Reset countdown started (" + secs + "s)."));
-        }
+        plugin.getResetManager().handleResetInitiation(sender, now, confirm);
     }
 
     // ── cancel ─────────────────────────────────────────────────────────────
@@ -879,6 +833,8 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(kv("Directory",  cfg.getBackupDirectory()));
             sender.sendMessage(kv("Keep",       String.valueOf(cfg.getBackupKeep()) + " backups per world"));
             sender.sendMessage(gray("  now           — immediately zip all reset worlds"));
+            sender.sendMessage(gray("  list          — show all available ZIP archives"));
+            sender.sendMessage(gray("  restore <zip> — restore worlds from an archive"));
             sender.sendMessage(gray("  enable/disable"));
             sender.sendMessage(gray("  keep <n>      — number of backups to keep per world"));
             sender.sendMessage(gray("  dir <path>    — backup directory (relative to server root)"));
@@ -894,6 +850,50 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     Bukkit.getScheduler().runTask(plugin, () ->
                             msg(sender, green("Backup complete. Check '" + cfg.getBackupDirectory() + "'.")));
                 });
+                break;
+            case "list":
+                List<File> backups = plugin.getResetManager().getAvailableBackups();
+                sender.sendMessage(header("Available Backups"));
+                if (backups.isEmpty()) {
+                    sender.sendMessage(yellow("  No backup ZIPs found in '" + cfg.getBackupDirectory() + "'."));
+                } else {
+                    for (File f : backups) {
+                        String name = f.getName();
+                        long sizeMb = f.length() / 1_048_576L;
+                        String date = new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date(f.lastModified()));
+                        
+                        if (sender instanceof Player) {
+                            TextComponent line = new TextComponent("  §b▸ " + name + " §7(" + sizeMb + " MB) — " + date);
+                            TextComponent restoreBtn = new TextComponent(" §8[§cRestore§8]");
+                            restoreBtn.setClickEvent(new ClickEvent(ClickEvent.Action.SUGGEST_COMMAND, "/worldreset backup restore " + name));
+                            restoreBtn.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Text("§7Click to pre-fill restore command for " + name)));
+                            line.addExtra(restoreBtn);
+                            ((Player) sender).spigot().sendMessage(line);
+                        } else {
+                            sender.sendMessage("  §b▸ " + name + " §7(" + sizeMb + " MB) — " + date);
+                        }
+                    }
+                }
+                break;
+            case "restore":
+                if (args.length < 3) { msg(sender, red("Usage: /worldreset backup restore <zip_filename>")); break; }
+                String zipName = args[2];
+                String initiator = sender.getName();
+                
+                if (plugin.getResetManager().isResetPending()) {
+                    msg(sender, red("Cannot restore while a reset or countdown is in progress."));
+                    break;
+                }
+
+                // If not confirmed via flag, ask for confirmation
+                if (!hasFlag(args, "--confirm")) {
+                    msg(sender, red("⚠ WARNING: Restoring a backup will DELETE all current worlds!"));
+                    msg(sender, gray("To proceed, run: ") + white("/worldreset backup restore " + zipName + " --confirm"));
+                    break;
+                }
+
+                msg(sender, green("Initiating restoration from '" + zipName + "'…"));
+                plugin.getResetManager().restoreBackup(initiator, zipName);
                 break;
             case "enable":
                 cfg.setBackupEnabled(true);
@@ -1665,7 +1665,13 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                     break;
                 case "backup":
                     if (hasPerm(sender, "worldreset.backup")) {
-                        result.addAll(Arrays.asList("now", "enable", "disable", "keep", "dir"));
+                        if (args[1].equalsIgnoreCase("restore")) {
+                            for (File f : plugin.getResetManager().getAvailableBackups()) {
+                                result.add(f.getName());
+                            }
+                        } else {
+                            result.addAll(Arrays.asList("now", "list", "restore", "enable", "disable", "keep", "dir"));
+                        }
                     }
                     break;
                 case "generator": case "environment":

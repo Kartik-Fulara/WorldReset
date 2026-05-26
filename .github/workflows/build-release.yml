@@ -1,0 +1,123 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  release:
+    types:
+      - published
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      artifact_version: ${{ steps.version.outputs.version }}
+      build_status: ${{ job.status }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load Configuration
+        id: config
+        run: |
+          if [ -f .github/workflow-config.yml ]; then
+            # Robust extraction of values from YAML (handles quotes, spaces, and comments)
+            DEPLOY_OWNER=$(grep "owner:" .github/workflow-config.yml | sed 's/.*owner:[[:space:]]*"\?\([^"#]*\)"\?.*/\1/' | xargs)
+            DEPLOY_REPO=$(grep "repo:" .github/workflow-config.yml | sed 's/.*repo:[[:space:]]*"\?\([^"#]*\)"\?.*/\1/' | xargs)
+            EVENT_TYPE=$(grep "event_type:" .github/workflow-config.yml | sed 's/.*event_type:[[:space:]]*"\?\([^"#]*\)"\?.*/\1/' | xargs)
+
+            echo "deploy_owner=$DEPLOY_OWNER" >> $GITHUB_OUTPUT
+            echo "deploy_repo=$DEPLOY_REPO" >> $GITHUB_OUTPUT
+            echo "event_type=$EVENT_TYPE" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_owner=DeployOwner" >> $GITHUB_OUTPUT
+            echo "deploy_repo=DeployRepo" >> $GITHUB_OUTPUT
+            echo "event_type=trigger-deploy" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Java
+        if: hashFiles('pom.xml') != '' || hashFiles('build.gradle') != ''
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Setup Node.js
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Detect Language & Build
+        id: build_step
+        run: |
+          if [ -f "package.json" ] && [ ! -f "bun.lockb" ]; then
+            npm ci && npm run build
+          elif [ -f "bun.lockb" ]; then
+            bun install && bun run build
+          elif [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          elif [ -f "pom.xml" ]; then
+            mvn --batch-mode clean package -DskipTests
+          elif [ -f "build.gradle" ]; then
+            ./gradlew build
+          elif [ -f "Cargo.toml" ]; then
+            cargo build --release
+          elif [ -f "go.mod" ]; then
+            go build
+          elif [ -f "composer.json" ]; then
+            composer install
+          elif ls *.csproj 1> /dev/null 2>&1; then
+            dotnet build
+          elif [ -f "Dockerfile" ]; then
+            docker build .
+          fi
+
+      - name: Determine Version
+        id: version
+        run: |
+          VERSION="v1.0.${{ github.run_number }}"
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          elif [[ -f VERSION ]]; then
+            VERSION="v$(cat VERSION | tr -d '[:space:]')"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Package Artifacts
+        id: package
+        run: |
+          mkdir -p dist_artifacts
+          # Copy common build outputs to dist_artifacts for convenience, though we tar the whole root
+          [ -d "target" ] && cp target/*.jar dist_artifacts/ 2>/dev/null || true
+          [ -d "dist" ] && cp -r dist/* dist_artifacts/ 2>/dev/null || true
+          
+          tar -czf artifact.tar.gz -C . .
+          echo "artifact_name=artifact.tar.gz" >> $GITHUB_OUTPUT
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: artifact.tar.gz
+          retention-days: 7
+
+      - name: Trigger Deployment
+        if: success() && steps.config.outputs.deploy_owner != 'DeployOwner'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DEPLOY_REPO_PAT }}
+          repository: ${{ steps.config.outputs.deploy_owner }}/${{ steps.config.outputs.deploy_repo }}
+          event-type: ${{ steps.config.outputs.event_type }}
+          client-payload: '{"repository": "${{ github.repository }}", "version": "${{ steps.version.outputs.version }}", "artifact_name": "build-artifact", "commit": "${{ github.sha }}", "actor": "${{ github.actor }}"}'

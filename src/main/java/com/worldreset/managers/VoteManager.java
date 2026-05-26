@@ -41,6 +41,7 @@ public class VoteManager implements CommandExecutor, TabCompleter {
     // Active-vote state (null when idle)
     private UUID       initiatorUuid = null;
     private Set<UUID>  yesVotes      = null;
+    private Set<UUID>  noVotes       = null;
     private BukkitTask voteTask      = null;
 
     /**
@@ -81,10 +82,11 @@ public class VoteManager implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        // /resetvote yes  — cast a yes vote
-        if (args.length >= 1 && args[0].equalsIgnoreCase("yes")) {
-            handleCastVote(sender);
-            return true;
+        // /resetvote yes/no
+        if (args.length >= 1) {
+            String sub = args[0].toLowerCase();
+            if (sub.equals("yes")) { handleCastVote(sender, true); return true; }
+            if (sub.equals("no"))  { handleCastVote(sender, false); return true; }
         }
 
         // /resetvote  — start a new vote
@@ -96,8 +98,10 @@ public class VoteManager implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command,
                                       String alias, String[] args) {
         List<String> out = new ArrayList<>();
-        if (args.length == 1 && "yes".startsWith(args[0].toLowerCase())) {
-            out.add("yes");
+        if (args.length == 1) {
+            String sub = args[0].toLowerCase();
+            if ("yes".startsWith(sub)) out.add("yes");
+            if ("no".startsWith(sub))  out.add("no");
         }
         return out;
     }
@@ -127,6 +131,7 @@ public class VoteManager implements CommandExecutor, TabCompleter {
         // Open the vote
         initiatorUuid = (sender instanceof Player) ? ((Player) sender).getUniqueId() : null;
         yesVotes      = new HashSet<>();
+        noVotes       = new HashSet<>();
 
         // Initiator's own vote counts immediately
         if (sender instanceof Player) {
@@ -136,14 +141,19 @@ public class VoteManager implements CommandExecutor, TabCompleter {
         int duration = cfg.getVoteDurationSeconds();
         Bukkit.broadcastMessage(
                 "§e[VOTE] §f" + sender.getName()
-                + " §estarted a reset vote! Type §b/resetvote yes §eto agree. §7("
+                + " §estarted a reset vote! Use the on-screen menu to vote. §7("
                 + duration + "s)");
+
+        // 🖼️ Open GUI for everyone
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            plugin.getMenuManager().openVoteMenu(p);
+        }
 
         // Schedule evaluation after duration
         voteTask = Bukkit.getScheduler().runTaskLater(plugin, this::evaluateVote, (long) duration * 20L);
     }
 
-    private void handleCastVote(CommandSender sender) {
+    private void handleCastVote(CommandSender sender, boolean yes) {
         if (!isVoteActive()) {
             sender.sendMessage("§e[VOTE] No reset vote is currently active.");
             return;
@@ -155,21 +165,25 @@ public class VoteManager implements CommandExecutor, TabCompleter {
         }
 
         UUID uuid = ((Player) sender).getUniqueId();
-        if (yesVotes.contains(uuid)) {
-            sender.sendMessage("§e[VOTE] You have already voted yes.");
+        if ((yesVotes != null && yesVotes.contains(uuid)) || (noVotes != null && noVotes.contains(uuid))) {
+            sender.sendMessage("§e[VOTE] You have already voted.");
             return;
         }
 
-        yesVotes.add(uuid);
+        if (yes) yesVotes.add(uuid);
+        else     noVotes.add(uuid);
+
         int online = Bukkit.getOnlinePlayers().size();
         Bukkit.broadcastMessage(
                 "§e[VOTE] §f" + sender.getName()
-                + " §evoted yes! §7(" + yesVotes.size() + "/" + online + ")");
+                + " §evoted " + (yes ? "§aYES" : "§cNO") + "§e! §7(" 
+                + (yesVotes.size() + noVotes.size()) + "/" + online + ")");
     }
 
     private void evaluateVote() {
         int online  = Bukkit.getOnlinePlayers().size();
         int yes     = (yesVotes == null) ? 0 : yesVotes.size();
+        int no      = (noVotes == null) ? 0 : noVotes.size();
         int required = plugin.getConfigManager().getVoteRequiredPercent();
 
         // Ensure we don't divide by zero on an empty server
@@ -189,13 +203,13 @@ public class VoteManager implements CommandExecutor, TabCompleter {
 
         if (pct >= required) {
             Bukkit.broadcastMessage(
-                    "§a[VOTE] Reset vote passed! §7(" + yes + "/" + online
+                    "§a[VOTE] Reset vote passed! §7(" + yes + " YES, " + no + " NO / " + online + " online"
                     + ", " + String.format("%.0f", pct) + "% ≥ " + required + "%)");
             plugin.getResetManager().startReset("Vote", false);
         } else {
             Bukkit.broadcastMessage(
-                    "§a[VOTE] Reset vote failed — not enough votes. §7("
-                    + yes + "/" + online + ", " + String.format("%.0f", pct) + "% < " + required + "%)");
+                    "§c[VOTE] Reset vote failed! §7(" + yes + " YES, " + no + " NO / " + online + " online"
+                    + ", " + String.format("%.0f", pct) + "% < " + required + "%)");
         }
     }
 
@@ -217,6 +231,7 @@ public class VoteManager implements CommandExecutor, TabCompleter {
             voteTask = null;
         }
         yesVotes      = null;
+        noVotes       = null;
         initiatorUuid = null;
     }
 }

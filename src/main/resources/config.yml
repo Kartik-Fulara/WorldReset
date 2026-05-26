@@ -194,6 +194,7 @@ notifications:
   #  {server}           Server name
   #  {initiator}        Player / Schedule / Vote that started the reset
   #  {mode}             restart  OR  live-regeneration
+  #  {schedule}         Reset schedule (CRON/Interval/Daily)
   #  {time}             Timestamp the reset was triggered
   #  {worlds}           Comma-separated world list
   #  {worlds_detail}    Per-world: environment, seed (locked/random), hardcore flag
@@ -216,7 +217,8 @@ notifications:
   #
   discord-start-template: |
     🔄 **World Reset STARTED** — **{server}**
-    **Initiated by:** {initiator}  |  **Mode:** {mode}  |  **Time:** {time}
+    **Initiated by:** {initiator}  |  **Mode:** {mode}  |  **Schedule:** {schedule}
+    **Time:** {time}
     ─────────────────────────────
     🌍 **Worlds:**
     {worlds_detail}

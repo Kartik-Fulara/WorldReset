@@ -371,11 +371,20 @@ public class ConfigManager {
     public String  getScheduleMode()         { return cfg().getString( "schedule.mode",             "interval"); }
     public int     getScheduleIntervalSecs() { return cfg().getInt(    "schedule.interval-seconds", 86400); }
     public String  getScheduleDailyTime()    { return cfg().getString( "schedule.daily-time",       "04:00"); }
+    public String  getScheduleCron()         { return cfg().getString( "schedule.cron",             "0 0 * * *"); }
 
     public void setScheduleEnabled(boolean val)   { cfg().set("schedule.enabled",          val); save(); }
     public void setScheduleMode(String mode)       { cfg().set("schedule.mode",              mode); save(); }
     public void setScheduleIntervalSecs(int secs)  { cfg().set("schedule.interval-seconds",  Math.max(1, secs)); save(); }
     public void setScheduleDailyTime(String time)  { cfg().set("schedule.daily-time",        time); save(); }
+    public void setScheduleCron(String cron)       { cfg().set("schedule.cron",              cron); save(); }
+
+    // ── Template Mode ───────────────────────────────────────────────────────
+
+    public boolean isUseTemplate()           { return cfg().getBoolean("reset.use-template",      false); }
+    public String  getTemplateDirectory()    { return cfg().getString( "reset.template-directory", "templates"); }
+    public void setUseTemplate(boolean val)  { cfg().set("reset.use-template", val); save(); }
+    public void setTemplateDirectory(String dir) { cfg().set("reset.template-directory", dir); save(); }
 
     /** Safety floor for the schedule interval in seconds. Prevents dangerously short cycles. */
     public int getScheduleMinIntervalSecs() {
@@ -575,6 +584,9 @@ public class ConfigManager {
     public int     getVoteMinPlayers()     { return cfg().getInt(    "vote.min-players",             3);     }
 
     public void setVoteEnabled(boolean val) { cfg().set("vote.enabled", val); save(); }
+    public void setVoteRequiredPercent(int val) { cfg().set("vote.required-percent", val); save(); }
+    public void setVoteDurationSeconds(int val) { cfg().set("vote.vote-duration-seconds", val); save(); }
+    public void setVoteMinPlayers(int val) { cfg().set("vote.min-players", val); save(); }
 
     // ── Player Data ────────────────────────────────────────────────────────
 

@@ -13,6 +13,7 @@ import com.sk89q.worldedit.function.operation.Operations;
 import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.regions.CuboidRegion;
 import com.sk89q.worldedit.session.ClipboardHolder;
+import com.worldreset.api.IRegionManager;
 import com.worldreset.WorldResetPlugin;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -27,7 +28,7 @@ import java.util.logging.Logger;
 /**
  * Handles selective region preservation using WorldEdit schematics.
  */
-public class RegionManager {
+public class RegionManager implements IRegionManager {
 
     private final WorldResetPlugin plugin;
     private final Logger log;

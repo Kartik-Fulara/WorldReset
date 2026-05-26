@@ -1,8 +1,10 @@
 package com.worldreset.managers;
 
+import com.worldreset.api.IRegionManager;
 import com.worldreset.WorldResetPlugin;
-import com.worldreset.api.events.WorldResetCompleteEvent;
-import com.worldreset.api.events.WorldResetStartEvent;
+import com.worldreset.api.WorldResetUtil;
+import com.worldreset.api.events.*;
+import com.worldreset.utils.SecurityUtil;
 import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.*;
@@ -17,14 +19,14 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
 import java.time.Duration;
 import java.util.*;
 import java.util.List;
 import java.util.logging.Logger;
 import java.util.zip.GZIPOutputStream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
+import java.util.zip.ZipInputStream;
 
 /**
  * Handles the full reset lifecycle:
@@ -114,6 +116,81 @@ public class ResetManager {
     }
 
     // ── Public API ─────────────────────────────────────────────────────────
+
+    /**
+     * Handles the full reset initiation flow (confirmation logic + starting).
+     * Used by both commands and GUI.
+     *
+     * @param player the player initiating the reset (can be null for console)
+     * @param forceNow if true, skips countdown if confirmed
+     * @param confirmed if true, skips the confirmation safety check
+     */
+    public void handleResetInitiation(org.bukkit.command.CommandSender player, boolean forceNow, boolean confirmed) {
+        if (isResetPending()) {
+            player.sendMessage("§c[WorldReset] A reset is already in progress.");
+            return;
+        }
+
+        String senderKey = player instanceof Player
+                ? ((Player) player).getUniqueId().toString()
+                : "CONSOLE";
+
+        Map<String, Long> pendingConfirm = plugin.getResetCommand().pendingConfirm;
+        long CONFIRM_EXPIRE_MS = com.worldreset.commands.ResetCommand.CONFIRM_EXPIRE_MS;
+
+        if (confirmed) {
+            // Validate a pending confirmation actually exists and hasn't expired.
+            Long prev  = pendingConfirm.get(senderKey);
+            long nowMs = System.currentTimeMillis();
+            if (prev == null || nowMs - prev > CONFIRM_EXPIRE_MS) {
+                player.sendMessage("§c[WorldReset] No pending confirmation — start reset first, then confirm within 30s.");
+                pendingConfirm.remove(senderKey);
+                return;
+            }
+            pendingConfirm.remove(senderKey);
+        } else {
+            long nowMs = System.currentTimeMillis();
+            Long prev  = pendingConfirm.get(senderKey);
+
+            if (prev == null || nowMs - prev > CONFIRM_EXPIRE_MS) {
+                if (prev != null && nowMs - prev > CONFIRM_EXPIRE_MS) {
+                    player.sendMessage("§c[WorldReset] Your confirmation expired. Try again.");
+                }
+                pendingConfirm.put(senderKey, nowMs);
+                
+                player.sendMessage("");
+                player.sendMessage("§c§l⚠ WARNING: §eThis will permanently delete and regenerate worlds!");
+                player.sendMessage("§7Confirm by clicking §a[CONFIRM] §7or typing §f/wr start --confirm");
+                
+                if (player instanceof Player) {
+                    net.md_5.bungee.api.chat.TextComponent confirmBtn = new net.md_5.bungee.api.chat.TextComponent("§a§l[CONFIRM RESET]");
+                    confirmBtn.setClickEvent(new net.md_5.bungee.api.chat.ClickEvent(
+                            net.md_5.bungee.api.chat.ClickEvent.Action.RUN_COMMAND, 
+                            forceNow ? "/worldreset start --now --confirm" : "/worldreset start --confirm"
+                    ));
+                    confirmBtn.setHoverEvent(new net.md_5.bungee.api.chat.HoverEvent(
+                            net.md_5.bungee.api.chat.HoverEvent.Action.SHOW_TEXT,
+                            new net.md_5.bungee.api.chat.ComponentBuilder("§7Click to initiate the reset process.").create()
+                    ));
+                    ((Player) player).spigot().sendMessage(confirmBtn);
+                }
+                player.sendMessage("");
+                return;
+            }
+            pendingConfirm.remove(senderKey);
+        }
+
+        // Logic reached here means it's confirmed
+        String initiator = player instanceof Player ? player.getName() : "Console";
+        startReset(initiator, forceNow);
+
+        if (forceNow) {
+            player.sendMessage("§a[WorldReset] Reset triggered immediately.");
+        } else {
+            int secs = plugin.getConfigManager().getCountdown();
+            player.sendMessage("§a[WorldReset] Reset countdown started (" + secs + "s).");
+        }
+    }
 
     /** Returns {@code true} if a reset countdown or execution is currently in progress. Main thread. */
     public boolean isResetPending() { return resetPending; }
@@ -273,10 +350,13 @@ public class ResetManager {
      *   • Heavy I/O (backup + deletion + HTTP) runs on an ASYNC thread.
      *   • Everything from createWorld() onward runs back on the MAIN thread.
      */
+    /**
+     * Master reset method. Decomposed into prep, async, and finalize phases.
+     */
     private void executeReset() {
         ConfigManager cfg = plugin.getConfigManager();
 
-        // Fire API Event
+        // 1. Fire Start Event
         WorldResetStartEvent startEvent = new WorldResetStartEvent(currentInitiator, cfg.getWorldsToReset());
         Bukkit.getPluginManager().callEvent(startEvent);
         if (startEvent.isCancelled()) {
@@ -288,20 +368,33 @@ public class ResetManager {
 
         log.info("=== WorldReset executing ===");
 
-        // ── Discord: send START notification synchronously so it is guaranteed
-        //    to arrive at Discord before the COMPLETE notification that follows.
-        //    Players have already been kicked at this point so a brief HTTP
-        //    block (~5s timeout) on the main thread is acceptable.
-        {
+        // 2. Phase 1 (MAIN): Preparation
+        if (!prepareReset(cfg)) return;
+
+        // 3. Phase 2 (ASYNC): Backup + Deletion + Discord
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            // Discord START notification (Async to prevent main thread lag)
             String webhookUrl = cfg.getDiscordWebhookUrl();
             if (webhookUrl != null && !webhookUrl.isEmpty()) {
-                sendDiscordWebhook(webhookUrl,
-                        buildDiscordMessage(cfg.getDiscordStartTemplate(), false, 0));
+                sendDiscordWebhook(webhookUrl, buildDiscordMessage(cfg.getDiscordStartTemplate(), false, 0));
             }
-        }
 
-        // ── Phase 1 (MAIN): kick, whitelist, pre-commands, unload ──────────
+            if (cfg.isBackupEnabled()) {
+                backupWorlds();
+            }
 
+            performAsyncDeletion(cfg);
+
+            // 4. Phase 3 (MAIN): Finalize
+            Bukkit.getScheduler().runTask(plugin, () -> finalizeReset(cfg));
+        });
+    }
+
+    /**
+     * Phase 1 of reset: Kick players, pre-commands, unload worlds. Main thread.
+     * @return true if preparation succeeded
+     */
+    private boolean prepareReset(ConfigManager cfg) {
         for (Player p : new ArrayList<>(Bukkit.getOnlinePlayers())) {
             p.kickPlayer(cfg.getKickMessage());
         }
@@ -315,196 +408,177 @@ public class ResetManager {
             try {
                 boolean ok = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
                 if (!ok && cfg.isPreResetCommandsStrict()) {
-                    log.severe("Pre-reset command returned false (strict mode): '" + cmd + "' — aborting reset.");
-                    Bukkit.broadcastMessage(color("§c[RESET] Pre-reset command failed — reset aborted."));
-                    resetPending = false;
-                    secondsLeft  = 0;
-                    return;
+                    log.severe("Pre-reset command failed (strict): '" + cmd + "' — aborting.");
+                    abortReset("Pre-reset command failed.");
+                    return false;
                 }
             } catch (Exception e) {
-                log.warning("Pre-reset command failed '" + cmd + "': " + e.getMessage());
+                log.warning("Pre-reset command error '" + cmd + "': " + e.getMessage());
                 if (cfg.isPreResetCommandsStrict()) {
-                    log.severe("Strict mode — aborting reset due to pre-reset command exception.");
-                    Bukkit.broadcastMessage(color("§c[RESET] Pre-reset command failed — reset aborted."));
-                    resetPending = false;
-                    secondsLeft  = 0;
-                    return;
+                    abortReset("Pre-reset command exception.");
+                    return false;
                 }
             }
         }
 
         savePreservedRegions();
 
-        // Unload worlds on the main thread using the Paper API.
-        // Bukkit.unloadWorld() automatically updates the internal world registry,
-        // so no reflection is needed.
         for (String worldName : cfg.getWorldsToReset()) {
             World world = Bukkit.getWorld(worldName);
             if (world != null) {
-                log.info("Seed BEFORE reset for '" + worldName + "': " + world.getSeed());
-                // save=false: we are about to delete the folder anyway.
-                // The world was already saved by save() calls during the countdown.
                 boolean ok = Bukkit.unloadWorld(world, false);
-                log.info((ok ? "Unloaded" : "Failed to unload (continuing)") + " world: " + worldName);
+                log.info((ok ? "Unloaded" : "Failed to unload") + " world: " + worldName);
             }
         }
+        return true;
+    }
 
-        // ── Phase 2 (ASYNC): backup + delete + Discord ─────────────────────
+    private void abortReset(String reason) {
+        Bukkit.broadcastMessage(color("§c[RESET] " + reason + " — reset aborted."));
+        resetPending = false;
+        secondsLeft = 0;
+    }
 
-        Runnable asyncWork = () -> {
-            if (cfg.isBackupEnabled()) {
-                backupWorlds();
-            }
-            deleteWorldFolders();
-            deleteExtraPaths();
-            // Discord START notification is now sent at the top of executeReset()
-            // so players and Discord see it immediately, not after world deletion.
-        };
+    /**
+     * Phase 2 of reset: Delete world folders and extra paths. Async thread.
+     */
+    private void performAsyncDeletion(ConfigManager cfg) {
+        deleteWorldFolders();
+        deleteExtraPaths();
+    }
 
-        // ── Phase 3 (MAIN): regenerate / restart + post-steps ──────────────
+    /**
+     * Phase 3 of reset: Regenerate worlds, apply settings, post-commands. Main thread.
+     */
+    private void finalizeReset(ConfigManager cfg) {
+        if (cfg.isServerPropertiesEnabled()) {
+            writeServerProperties();
+        }
 
-        Runnable mainContinue = () -> {
-            // Patch server.properties before world generation or restart.
-            // User requested that serverprops patches be written "pre world generation".
-            if (cfg.isServerPropertiesEnabled()) {
-                writeServerProperties();
-            }
-
-            if (cfg.isUseRestart()) {
-                // Pre-write level.dat for EVERY world before the restart.
-                //
-                // Why this is required for ALL worlds (locked AND random):
-                //   When Paper/Spigot starts and finds no level.dat it falls back to
-                //   reading `level-seed` from server.properties.  That key holds the
-                //   seed the server was originally created with and never changes on
-                //   its own, so every reset would silently reuse the same "default"
-                //   seed for any world that wasn't locked.
-                //
-                //   By writing level.dat ourselves — with the locked seed for locked
-                //   worlds, or a freshly generated SecureRandom seed for random worlds
-                //   — we guarantee that Paper always reads from level.dat and that
-                //   each world gets exactly what was configured:
-                //
-                //     • Locked  → same seed every reset, forever (until the operator
-                //                 unlocks it via /worldreset seed <world> random).
-                //     • Random  → brand-new seed each reset, independent per world.
-                Map<String, String> patches = cfg.getServerPropertiesValues();
-                for (String wn : cfg.getWorldsToReset()) {
-                    Long lockedSeed = cfg.getSeedForWorld(wn);
-
-                    // Priority 1: server.properties patches (level-seed)
-                    if (cfg.isServerPropertiesEnabled() && patches.containsKey("level-seed")) {
-                        String patchSeed = patches.get("level-seed");
-                        try {
-                            lockedSeed = Long.parseLong(patchSeed);
-                        } catch (NumberFormatException e) {
-                            log.warning("Invalid level-seed patch '" + patchSeed + "' — using config seed.");
-                        }
-                    }
-
-                    boolean hc = cfg.isHardcoreForWorld(wn);
-                    // Priority 1: server.properties patches (hardcore)
-                    if (cfg.isServerPropertiesEnabled() && patches.containsKey("hardcore")) {
-                        hc = Boolean.parseBoolean(patches.get("hardcore"));
-                    }
-
-                    if (lockedSeed != null) {
-                        // Locked world — always use the stored seed.
-                        writeSeedToLevelDat(wn, lockedSeed, hc);
-                        log.info("[Seed] '" + wn + "' → LOCKED seed " + lockedSeed
-                                + (hc ? " [HARDCORE]" : "") + " written to level.dat.");
-                    } else {
-                        // Random world — generate a fresh seed now so each reset
-                        // produces a genuinely different world, regardless of what
-                        // level-seed says in server.properties.
-                        long randomSeed = new java.security.SecureRandom().nextLong();
-                        writeSeedToLevelDat(wn, randomSeed, hc);
-                        log.info("[Seed] '" + wn + "' → new RANDOM seed " + randomSeed
-                                + (hc ? " [HARDCORE]" : "") + " written to level.dat.");
-                    }
-                }
-
-                // ── Write post-restart flag ─────────────────────────────────
-                // Detected in onEnable() after the server comes back up so we
-                // can re-apply gamerules, difficulty, world border, and spawn
-                // to the freshly-created worlds.
-                writePendingRestartFlag();
-
-                log.info("Triggering Spigot server restart (use-restart=true)…");
-                try {
-                    Bukkit.getServer().spigot().restart();
-                } catch (Exception e) {
-                    log.severe("spigot().restart() threw an exception: " + e.getMessage());
-                } finally {
-                    // FIX 5: ensure resetPending is always cleared even if restart fails.
-                    long durationSecs = (System.currentTimeMillis() - resetStartMs) / 1000L;
-                    plugin.getHistoryManager().logReset(
-                            currentInitiator, "restart",
-                            plugin.getConfigManager().getWorldsToReset(), durationSecs);
-
-                    // Fire API Event (Complete)
-                    Bukkit.getPluginManager().callEvent(new WorldResetCompleteEvent(
-                            currentInitiator, "restart", plugin.getConfigManager().getWorldsToReset(), durationSecs));
-
-                    lastResetCompleteMs = System.currentTimeMillis();
-                    resetPending = false;
-                    secondsLeft  = 0;
-                }
-            } else {
-                regenerateWorlds();
-                pastePreservedRegions();
-                applyGamerulesAndDifficulty();
-                applyWorldBorder();
-                applySpawn();
-
-                if (cfg.isPlayerDataEnabled()) {
-                    clearPlayerData();
-                }
-
-                if (cfg.isWhitelistDuringReset()) {
-                    Bukkit.setWhitelist(false);
-                    log.info("Whitelist disabled after reset.");
-                }
-
-                for (String cmd : cfg.getPostResetCommands()) {
-                    try {
-                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
-                    } catch (Exception e) {
-                        log.warning("Post-reset command failed '" + cmd + "': " + e.getMessage());
-                    }
-                }
-
-                resetPending = false;
-                secondsLeft  = 0;
-                Bukkit.broadcastMessage(color(cfg.getMsgResetComplete()));
-
-                // History log
-                long durationSecs = (System.currentTimeMillis() - resetStartMs) / 1000L;
-                plugin.getHistoryManager().logReset(
-                        currentInitiator, "live-regeneration",
-                        cfg.getWorldsToReset(), durationSecs);
-
-                // Fire API Event (Complete)
-                Bukkit.getPluginManager().callEvent(new WorldResetCompleteEvent(
-                        currentInitiator, "live-regeneration", cfg.getWorldsToReset(), durationSecs));
-
-                lastResetCompleteMs = System.currentTimeMillis();
-
-                log.info("=== WorldReset complete ===");
-            }
-        };
-
-        // FIX 1: file I/O runs async; main-thread work scheduled back via runTask.
-        if (cfg.isDeleteAsync()) {
-            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-                asyncWork.run();
-                Bukkit.getScheduler().runTask(plugin, mainContinue);
-            });
+        if (cfg.isUseRestart()) {
+            handleResetRestart(cfg);
         } else {
-            // Legacy sync mode — everything on the main thread (may freeze the server)
-            asyncWork.run();
-            mainContinue.run();
+            handleResetLive(cfg);
         }
+    }
+
+    private void handleResetRestart(ConfigManager cfg) {
+        Map<String, String> patches = cfg.getServerPropertiesValues();
+        log.info("[Phase 3] Resolving seeds for " + cfg.getWorldsToReset().size() + " worlds...");
+        
+        for (String wn : cfg.getWorldsToReset()) {
+            Long lockedSeed = cfg.getSeedForWorld(wn);
+            // Priority 1: server.properties patches
+            if (cfg.isServerPropertiesEnabled() && patches.containsKey("level-seed")) {
+                try { lockedSeed = Long.parseLong(patches.get("level-seed")); } catch (Exception ignored) {}
+            }
+
+            boolean hc = cfg.isHardcoreForWorld(wn);
+            if (cfg.isServerPropertiesEnabled() && patches.containsKey("hardcore")) {
+                hc = Boolean.parseBoolean(patches.get("hardcore"));
+            }
+
+            long finalSeed = (lockedSeed != null) ? lockedSeed : new java.security.SecureRandom().nextLong();
+            writeSeedToLevelDat(wn, finalSeed, hc);
+            log.info("[Seed] '" + wn + "' → " + finalSeed + (hc ? " [HARDCORE]" : ""));
+        }
+
+        writePendingRestartFlag();
+        log.info("Triggering server restart…");
+
+        try {
+            Bukkit.getServer().spigot().restart();
+        } catch (Exception e) {
+            log.severe("Restart failed: " + e.getMessage());
+        } finally {
+            recordResetCompletion("restart");
+        }
+    }
+
+    private void handleResetLive(ConfigManager cfg) {
+        if (cfg.isUseTemplate()) {
+            copyTemplates(cfg);
+        } else {
+            regenerateWorlds();
+        }
+        
+        pastePreservedRegions();
+        applyGamerulesAndDifficulty();
+        applyWorldBorder();
+        applySpawn();
+
+        if (cfg.isPlayerDataEnabled()) {
+            clearPlayerData();
+        }
+
+        if (cfg.isWhitelistDuringReset()) {
+            Bukkit.setWhitelist(false);
+        }
+
+        for (String cmd : cfg.getPostResetCommands()) {
+            try { Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd); } catch (Exception ignored) {}
+        }
+
+        Bukkit.broadcastMessage(color(cfg.getMsgResetComplete()));
+        recordResetCompletion("live-regeneration");
+    }
+
+    private void copyTemplates(ConfigManager cfg) {
+        File templateRoot = new File(serverRoot(), cfg.getTemplateDirectory());
+        if (!templateRoot.exists()) {
+            log.severe("Template directory not found: " + templateRoot.getAbsolutePath() + ". Falling back to regeneration.");
+            regenerateWorlds();
+            return;
+        }
+
+        File container = Bukkit.getWorldContainer();
+        for (String worldName : cfg.getWorldsToReset()) {
+            File source = new File(templateRoot, worldName);
+            if (!source.exists()) {
+                log.warning("Template for '" + worldName + "' not found. Regenerating standard world.");
+                Bukkit.createWorld(new WorldCreator(worldName));
+                continue;
+            }
+
+            File dest = new File(container, worldName);
+            log.info("Copying template for '" + worldName + "'...");
+            try {
+                copyDirectory(source.toPath(), dest.toPath());
+                Bukkit.createWorld(new WorldCreator(worldName));
+            } catch (IOException e) {
+                log.severe("Failed to copy template for '" + worldName + "': " + e.getMessage());
+                Bukkit.createWorld(new WorldCreator(worldName));
+            }
+        }
+    }
+
+    private void copyDirectory(Path source, Path dest) throws IOException {
+        Files.walkFileTree(source, new SimpleFileVisitor<Path>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                Path targetDir = dest.resolve(source.relativize(dir));
+                Files.createDirectories(targetDir);
+                return FileVisitResult.CONTINUE;
+            }
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Files.copy(file, dest.resolve(source.relativize(file)), StandardCopyOption.REPLACE_EXISTING);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+    }
+
+    private void recordResetCompletion(String mode) {
+        long durationSecs = (System.currentTimeMillis() - resetStartMs) / 1000L;
+        plugin.getHistoryManager().logReset(currentInitiator, mode, plugin.getConfigManager().getWorldsToReset(), durationSecs);
+        
+        Bukkit.getPluginManager().callEvent(new WorldResetCompleteEvent(
+                currentInitiator, mode, plugin.getConfigManager().getWorldsToReset(), durationSecs));
+
+        lastResetCompleteMs = System.currentTimeMillis();
+        resetPending = false;
+        secondsLeft = 0;
+        log.info("=== WorldReset complete ===");
     }
 
     // ── Post-restart apply ─────────────────────────────────────────────────
@@ -682,28 +756,22 @@ public class ResetManager {
             File worldDir = new File(worldContainer, worldName);
             File levelDat = new File(worldDir, "level.dat");
 
-            if (!worldDir.exists()) {
-                log.info("World folder not found (nothing to delete): " + worldName + " in " + worldContainer.getPath());
-                continue;
+            if (!worldDir.exists()) continue;
+
+            // 🔌 Multiverse Integration (Unregister before delete)
+            if (plugin.getIntegrationManager().hasMultiverse()) {
+                plugin.getIntegrationManager().getMultiverse().unregisterWorld(worldName);
             }
 
-            deleteDirectoryNio(worldDir.toPath(), preserve, root.toPath());
+            try {
+                WorldResetUtil.deleteDirectoryNio(worldDir.toPath(), preserve, root.toPath());
+            } catch (IOException e) {
+                log.severe("Failed to delete world folder '" + worldName + "': " + e.getMessage());
+            }
 
-            // Last-chance forced delete on level.dat specifically — it must be gone
-            // before createWorld() is called or the old seed will be reused.
+            // Last-chance forced delete on level.dat
             if (levelDat.exists()) {
                 deleteWithRetry(levelDat.toPath());
-            }
-
-            if (levelDat.exists()) {
-                log.severe("level.dat STILL EXISTS for '" + worldName
-                        + "' — old seed will be reused on this reset. "
-                        + "File: " + levelDat.getAbsolutePath());
-            } else if (worldDir.exists()) {
-                log.info("level.dat deleted for '" + worldName
-                        + "' (folder skeleton may remain due to preserved children — OK).");
-            } else {
-                log.info("Confirmed fully deleted: " + worldName);
             }
         }
     }
@@ -717,67 +785,14 @@ public class ResetManager {
             File target = new File(root, relPath);
             if (!target.exists()) continue;
 
-            String rel = relativize(root, target);
-            if (isPreserved(rel, preserve)) {
-                log.info("Skipped (preserved): " + relPath);
-                continue;
+            try {
+                WorldResetUtil.deleteDirectoryNio(target.toPath(), preserve, root.toPath());
+            } catch (IOException e) {
+                log.warning("Failed to delete extra path '" + relPath + "': " + e.getMessage());
             }
-            deleteDirectoryNio(target.toPath(), preserve, root.toPath());
-            log.info("Extra path "
-                    + (target.exists() ? "FAILED to delete" : "deleted") + ": " + relPath);
         }
     }
 
-    /**
-     * Delete {@code path} recursively via NIO, honouring the preserve list.
-     * Returns true if the root path no longer exists after the call.
-     */
-    private boolean deleteDirectoryNio(Path path, List<String> preserve, Path root) {
-        try {
-            Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
-
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                    String rel = root.relativize(file).toString().replace('\\', '/');
-                    if (isPreserved(rel, preserve)) {
-                        log.info("  Preserved file: " + rel);
-                        return FileVisitResult.CONTINUE;
-                    }
-                    deleteWithRetry(file);
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
-                    if (exc != null) {
-                        log.warning("Error iterating directory: " + dir + " — " + exc.getMessage());
-                    }
-                    String rel = root.relativize(dir).toString().replace('\\', '/');
-                    if (isPreserved(rel, preserve)) {
-                        log.info("  Preserved dir: " + rel);
-                        return FileVisitResult.CONTINUE;
-                    }
-                    try {
-                        Files.delete(dir); // no-op if non-empty (preserved children)
-                    } catch (IOException e) {
-                        // Expected when the directory still contains preserved children —
-                        // not a failure, just means the folder skeleton stays on disk.
-                        log.info("  Dir not empty (has preserved children), leaving: " + rel);
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                    log.warning("Cannot visit: " + file + " — " + exc.getMessage());
-                    return FileVisitResult.CONTINUE;
-                }
-            });
-        } catch (IOException e) {
-            log.severe("NIO walkFileTree failed for " + path + ": " + e.getMessage());
-        }
-        return !Files.exists(path);
-    }
 
     /**
      * Delete a single file with a short retry loop for OS file-lock races.
@@ -831,7 +846,13 @@ public class ResetManager {
             return;
         }
 
+        // Fire Start Event
+        Bukkit.getScheduler().runTask(plugin, () -> 
+            Bukkit.getPluginManager().callEvent(new WorldBackupStartEvent(currentInitiator, cfg.getWorldsToReset())));
+
         String timestamp = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
+        List<String> results = new ArrayList<>();
+        boolean anyFailed = false;
 
         for (String worldName : cfg.getWorldsToReset()) {
             File worldDir = new File(worldContainer, worldName);
@@ -839,16 +860,49 @@ public class ResetManager {
 
             File zipFile = new File(backupDir, worldName + "_" + timestamp + ".zip");
             log.info("Backing up '" + worldName + "' → " + zipFile.getName() + " …");
+
+            // 🔍 Disk Space Check
+            long worldSize = SecurityUtil.getDirectorySize(worldDir);
+            long freeSpace = SecurityUtil.getFreeSpace(backupDir);
+            if (freeSpace < worldSize * 1.2) { // 20% buffer for safety
+                log.severe("Skipping backup for '" + worldName + "': INSUFFICIENT DISK SPACE. Need ~" + (worldSize/1024/1024) + "MB, have " + (freeSpace/1024/1024) + "MB.");
+                results.add("❌ `" + worldName + "` — Insufficient disk space");
+                continue;
+            }
+
             try {
-                zipDirectory(worldDir, zipFile);
-                log.info("Backup complete: " + zipFile.getName()
-                        + " (" + (zipFile.length() / 1_048_576L) + " MB)");
-            } catch (IOException e) {
+                WorldResetUtil.zipDirectory(worldDir, zipFile);
+                long sizeMb = zipFile.length() / 1_048_576L;
+                
+                // 🔐 Generate Checksum
+                SecurityUtil.createChecksum(zipFile);
+                
+                log.info("Backup complete: " + zipFile.getName() + " (" + sizeMb + " MB) + checksum created.");
+                results.add("✅ `" + worldName + "` (" + sizeMb + " MB)");
+            } catch (IOException | NoSuchAlgorithmException e) {
                 log.severe("Backup FAILED for '" + worldName + "': " + e.getMessage());
+                results.add("❌ `" + worldName + "` — " + e.getMessage());
+                anyFailed = true;
             }
 
             // Prune stale archives after each new one is written
             pruneOldBackups(backupDir, worldName, cfg.getBackupKeep());
+        }
+
+        // ── Discord Notification ──────────────────────────────────────────
+        String webhookUrl = cfg.getDiscordWebhookUrl();
+        if (!results.isEmpty() && webhookUrl != null && !webhookUrl.isEmpty()) {
+            String title = anyFailed ? "⚠️ **World Backup COMPLETED WITH ERRORS**" : "💾 **World Backup COMPLETE**";
+            String msg = title + " — **" + Bukkit.getServer().getName() + "**\n"
+                    + "Timestamp: `" + timestamp + "`\n"
+                    + String.join("\n", results);
+            sendDiscordWebhook(webhookUrl, msg);
+        }
+
+        // Summary Event
+        if (!results.isEmpty()) {
+            Bukkit.getScheduler().runTask(plugin, () -> 
+                Bukkit.getPluginManager().callEvent(new WorldBackupCompleteEvent(cfg.getWorldsToReset(), "Backup_" + timestamp, 0)));
         }
     }
 
@@ -897,37 +951,184 @@ public class ResetManager {
         }
     }
 
-    /** Create a ZIP archive of {@code sourceDir} at {@code zipFile}. */
-    private void zipDirectory(File sourceDir, File zipFile) throws IOException {
-        Path sourcePath = sourceDir.toPath();
-        try (ZipOutputStream zos = new ZipOutputStream(
-                new BufferedOutputStream(new FileOutputStream(zipFile)))) {
-            Files.walkFileTree(sourcePath, new SimpleFileVisitor<Path>() {
-                @Override
-                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
-                        throws IOException {
-                    if (!dir.equals(sourcePath)) {
-                        String entry = sourcePath.relativize(dir).toString().replace('\\', '/') + "/";
-                        zos.putNextEntry(new ZipEntry(entry));
-                        zos.closeEntry();
+    /**
+     * Returns a list of all ZIP files in the configured backup directory,
+     * sorted by last modified (newest first).
+     */
+    public List<File> getAvailableBackups() {
+        ConfigManager cfg = plugin.getConfigManager();
+        File backupDir = new File(serverRoot(), cfg.getBackupDirectory());
+        if (!backupDir.exists() || !backupDir.isDirectory()) return Collections.emptyList();
+
+        File[] files = backupDir.listFiles(f -> f.getName().toLowerCase().endsWith(".zip"));
+        if (files == null) return Collections.emptyList();
+
+        List<File> list = Arrays.asList(files);
+        list.sort(Comparator.comparingLong(File::lastModified).reversed());
+        return list;
+    }
+
+    /**
+     * Initiates a backup restoration process.
+     * 
+     * WARNING: This follows the same destructive flow as a reset (kick, unload, delete)
+     * but replaces regeneration with extraction from the ZIP.
+     * 
+     * @param initiator name of the player or console who started the restore
+     * @param zipName filename of the ZIP archive to restore (must be in backup dir)
+     */
+    public void restoreBackup(String initiator, String zipName) {
+        if (resetPending) return;
+
+        ConfigManager cfg = plugin.getConfigManager();
+        File backupDir = new File(serverRoot(), cfg.getBackupDirectory());
+        File zipFile = new File(backupDir, zipName);
+
+        if (!zipFile.exists()) {
+            log.severe("Restoration FAILED: ZIP file not found: " + zipFile.getAbsolutePath());
+            return;
+        }
+
+        // Fire Start Event
+        WorldRestoreStartEvent startEvent = new WorldRestoreStartEvent(initiator, zipName);
+        Bukkit.getPluginManager().callEvent(startEvent);
+        if (startEvent.isCancelled()) return;
+
+        resetPending = true;
+        currentInitiator = initiator;
+        resetStartMs = System.currentTimeMillis();
+
+        // Discord Start
+        String webhookUrl = cfg.getDiscordWebhookUrl();
+        if (webhookUrl != null && !webhookUrl.isEmpty()) {
+            String msg = "🔄 **Backup Restoration STARTED** — **" + Bukkit.getServer().getName() + "**\n"
+                    + "**Initiated by:** " + initiator + "\n"
+                    + "**Restoring:** `" + zipName + "`\n"
+                    + "⚠️ *Server will be unavailable during extraction.*";
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> sendDiscordWebhook(webhookUrl, msg));
+        }
+
+        // ── Phase 1 (MAIN): Preparation ────────────────────────────────────
+        for (Player p : new ArrayList<>(Bukkit.getOnlinePlayers())) {
+            p.kickPlayer("§cServer is restoring a backup. Please wait…");
+        }
+
+        if (cfg.isWhitelistDuringReset()) Bukkit.setWhitelist(true);
+
+        for (String worldName : cfg.getWorldsToReset()) {
+            World world = Bukkit.getWorld(worldName);
+            if (world != null) {
+                log.info("Unloading '" + worldName + "' for restoration…");
+                Bukkit.unloadWorld(world, false);
+            }
+        }
+
+        // ── Phase 2 (ASYNC): Safe Extraction ───────────────────────────────
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                // 🔐 Checksum Verification
+                if (!SecurityUtil.verifyChecksum(zipFile)) {
+                    throw new IOException("CHECKSUM MISMATCH or MISSING for '" + zipName + "'. Archive may be corrupt.");
+                }
+
+                File worldContainer = Bukkit.getWorldContainer();
+                
+                // 🔍 Disk Space Check (Extract)
+                long freeSpace = SecurityUtil.getFreeSpace(worldContainer);
+                if (freeSpace < zipFile.length() * 3) { // Assume 3x compression ratio for safety
+                     throw new IOException("INSUFFICIENT DISK SPACE for extraction. Need ~" + (zipFile.length()*3/1024/1024) + "MB.");
+                }
+
+                File tempDir = new File(plugin.getDataFolder(), "temp_restore_" + System.currentTimeMillis());
+                tempDir.mkdirs();
+
+                log.info("Extracting '" + zipName + "' to temporary folder…");
+                WorldResetUtil.unzip(zipFile, tempDir);
+                log.info("Extraction successful.");
+
+                // Now safe to delete current worlds
+                for (String worldName : cfg.getWorldsToReset()) {
+                    File worldDir = new File(worldContainer, worldName);
+                    if (worldDir.exists()) {
+                        log.info("Deleting active '" + worldName + "' before swap…");
+                        WorldResetUtil.deleteDirectoryNio(worldDir.toPath(), Collections.emptyList(), serverRoot().toPath());
                     }
-                    return FileVisitResult.CONTINUE;
                 }
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs)
-                        throws IOException {
-                    String entry = sourcePath.relativize(file).toString().replace('\\', '/');
-                    zos.putNextEntry(new ZipEntry(entry));
-                    Files.copy(file, zos);
-                    zos.closeEntry();
-                    return FileVisitResult.CONTINUE;
+
+                // Move from temp to container
+                log.info("Moving restored folders to container…");
+                File[] extracted = tempDir.listFiles();
+                if (extracted != null) {
+                    for (File f : extracted) {
+                        File target = new File(worldContainer, f.getName());
+                        f.renameTo(target);
+                    }
                 }
-                @Override
-                public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                    log.warning("Backup: skipping unreadable file: " + file + " — " + exc.getMessage());
-                    return FileVisitResult.CONTINUE;
-                }
-            });
+                
+                // Cleanup temp dir
+                tempDir.delete();
+
+                // ── Phase 3 (MAIN): Finalize ─────────────────────────────────
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (cfg.isUseRestart()) {
+                        handleRestoreRestart(cfg, zipName, webhookUrl);
+                    } else {
+                        handleRestoreLive(cfg, zipName, webhookUrl);
+                    }
+                });
+
+            } catch (IOException e) {
+                handleRestoreFailure(e, zipName, webhookUrl);
+            }
+        });
+    }
+
+    private void handleRestoreRestart(ConfigManager cfg, String zipName, String webhookUrl) {
+        log.info("Restoration complete. Restarting server...");
+        plugin.getServer().spigot().restart();
+        recordRestoreCompletion(zipName, webhookUrl);
+    }
+
+    private void handleRestoreLive(ConfigManager cfg, String zipName, String webhookUrl) {
+        log.info("Restoration complete. Loading worlds…");
+        for (String worldName : cfg.getWorldsToReset()) {
+            Bukkit.createWorld(new WorldCreator(worldName));
+        }
+
+        applyGamerulesAndDifficulty();
+        applyWorldBorder();
+        applySpawn();
+
+        if (cfg.isWhitelistDuringReset()) Bukkit.setWhitelist(false);
+
+        recordRestoreCompletion(zipName, webhookUrl);
+        log.info("Restoration finished.");
+    }
+
+    private void recordRestoreCompletion(String zipName, String webhookUrl) {
+        long duration = (System.currentTimeMillis() - resetStartMs) / 1000;
+        resetPending = false;
+        lastResetCompleteMs = System.currentTimeMillis();
+
+        // Fire Event
+        Bukkit.getPluginManager().callEvent(new WorldRestoreCompleteEvent(zipName, duration));
+
+        if (webhookUrl != null && !webhookUrl.isEmpty()) {
+            String msg = "✅ **Backup Restoration COMPLETE** — **" + Bukkit.getServer().getName() + "**\n"
+                    + "**Restored:** `" + zipName + "`\n"
+                    + "⏱️ **Duration:** " + formatDuration(duration);
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> sendDiscordWebhook(webhookUrl, msg));
+        }
+    }
+
+    private void handleRestoreFailure(Exception e, String zipName, String webhookUrl) {
+        log.severe("Restoration FAILED: " + e.getMessage());
+        resetPending = false;
+
+        if (webhookUrl != null && !webhookUrl.isEmpty()) {
+            String msg = "❌ **Backup Restoration FAILED** — **" + Bukkit.getServer().getName() + "**\n"
+                            + "**Error:** " + e.getMessage();
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> sendDiscordWebhook(webhookUrl, msg));
         }
     }
 
@@ -1048,6 +1249,11 @@ public class ResetManager {
                     log.warning("  !! Seed mismatch for '" + worldName + "' — requested "
                             + expectedSeed + " got " + actualSeed
                             + ". level.dat may not have been fully deleted.");
+                }
+
+                // 🔌 Multiverse Integration (Re-register after creation)
+                if (plugin.getIntegrationManager().hasMultiverse()) {
+                    plugin.getIntegrationManager().getMultiverse().registerWorld(worldName, env);
                 }
             } else {
                 log.warning("Bukkit.createWorld() returned null for: " + worldName);
@@ -1305,6 +1511,7 @@ public class ResetManager {
      *  {server}          — Bukkit server name
      *  {initiator}       — player name, "Schedule", or "Vote"
      *  {mode}            — "restart" or "live-regeneration"
+     *  {schedule}        — current reset schedule (CRON, interval, or daily)
      *  {time}            — current date/time (server timezone)
      *  {duration}        — how long the reset took (complete only; "in progress" on start)
      *
@@ -1355,6 +1562,21 @@ public class ResetManager {
         String mode      = cfg.isUseRestart() ? "restart" : "live-regeneration";
         String time      = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
         String duration  = isComplete ? formatDuration(durationSecs) : "in progress";
+
+        // ── Schedule ──────────────────────────────────────────────────────
+        String schedule;
+        if (cfg.isScheduleEnabled()) {
+            String schMode = cfg.getScheduleMode().toLowerCase();
+            if ("cron".equals(schMode)) {
+                schedule = "CRON: `" + cfg.getScheduleCron() + "`";
+            } else if ("daily".equals(schMode)) {
+                schedule = "Daily at " + cfg.getScheduleDailyTime() + " (" + cfg.getScheduleTimezone() + ")";
+            } else {
+                schedule = "Every " + formatDuration(cfg.getScheduleIntervalSecs());
+            }
+        } else {
+            schedule = "disabled";
+        }
 
         // ── Worlds ────────────────────────────────────────────────────────
         List<String> worldsList = cfg.getWorldsToReset();
@@ -1525,6 +1747,7 @@ public class ResetManager {
                 .replace("{server}",         server)
                 .replace("{initiator}",      initiator)
                 .replace("{mode}",           mode)
+                .replace("{schedule}",       schedule)
                 .replace("{time}",           time)
                 .replace("{duration}",       duration)
                 .replace("{worlds}",         worlds)
@@ -1655,8 +1878,8 @@ public class ResetManager {
                 writeNbtCompound(dos, "Data", () -> {
                     // Use a legacy DataVersion (2230 = 1.15.2) to ensure Paper
                     // performs a clean upgrade. If we use a modern version (1.16+)
-                    // but don't provide the complex WorldGenSettings structure,
-                    // Paper's codecs will throw an IllegalStateException.
+                    // but don't provide the complex WorldGenSettings structure (including 'dimensions'),
+                    // Paper's codecs will throw an IllegalStateException ("No key dimensions in MapLike").
                     writeNbtInt(dos, "DataVersion", 2230);
                     writeNbtInt(dos, "version", 19133);
                     writeNbtString(dos, "LevelName", worldName);
@@ -1669,8 +1892,7 @@ public class ResetManager {
                 });
             });
 
-            log.info("[Seed] Pre-wrote level.dat with locked seed "
-                    + seed + ", hardcore=" + hardcore + " for '" + worldName + "'.");
+            log.info("[Seed] Authoritatively wrote seed " + seed + " to level.dat for '" + worldName + "'.");
         } catch (IOException e) {
             log.warning("[Seed] Failed to pre-write level.dat for '"
                     + worldName + "': " + e.getMessage());

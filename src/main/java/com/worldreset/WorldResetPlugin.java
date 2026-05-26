@@ -1,12 +1,14 @@
 package com.worldreset;
 
-import com.worldreset.UpdateChecker;
+import com.worldreset.checker.UpdateChecker;
 import com.worldreset.commands.ResetCommand;
+import com.worldreset.integrations.IntegrationManager;
 import com.worldreset.integrations.WorldResetExpansion;
 import com.worldreset.gui.MenuManager;
+import com.worldreset.api.IRegionManager;
 import com.worldreset.managers.ConfigManager;
 import com.worldreset.managers.HistoryManager;
-import com.worldreset.managers.RegionManager;
+import com.worldreset.managers.RegionManagerFactory;
 import com.worldreset.managers.ResetManager;
 import com.worldreset.managers.ScheduleManager;
 import com.worldreset.managers.ServerPropertiesManager;
@@ -20,13 +22,15 @@ public class WorldResetPlugin extends JavaPlugin {
     private static WorldResetPlugin instance;
     private ConfigManager            configManager;
     private ResetManager             resetManager;
-    private RegionManager            regionManager;
+    private IRegionManager           regionManager;
     private MenuManager              menuManager;
     private ScheduleManager          scheduleManager;
     private ServerPropertiesManager  serverPropertiesManager;
     private HistoryManager           historyManager;
     private VoteManager              voteManager;
+    private ResetCommand             resetCommand;
     private UpdateChecker            updateChecker;
+    private IntegrationManager      integrationManager;
 
     @Override
     public void onEnable() {
@@ -44,19 +48,21 @@ public class WorldResetPlugin extends JavaPlugin {
 
         historyManager  = new HistoryManager(this);
         if (getServer().getPluginManager().getPlugin("WorldEdit") != null) {
-            regionManager = new RegionManager(this);
+            regionManager = RegionManagerFactory.create(this);
         }
         menuManager     = new MenuManager(this);
         resetManager    = new ResetManager(this);
         scheduleManager = new ScheduleManager(this);
+        integrationManager = new IntegrationManager(this);
+        integrationManager.init();
 
         // Register events
         getServer().getPluginManager().registerEvents(menuManager, this);
 
         // Register /worldreset
-        ResetCommand cmd = new ResetCommand(this);
-        getCommand("worldreset").setExecutor(cmd);
-        getCommand("worldreset").setTabCompleter(cmd);
+        resetCommand = new ResetCommand(this);
+        getCommand("worldreset").setExecutor(resetCommand);
+        getCommand("worldreset").setTabCompleter(resetCommand);
 
         // Register /resetvote
         voteManager = new VoteManager(this);
@@ -175,11 +181,13 @@ public class WorldResetPlugin extends JavaPlugin {
     public static WorldResetPlugin   getInstance()                  { return instance; }
     public ConfigManager             getConfigManager()             { return configManager; }
     public ResetManager              getResetManager()              { return resetManager; }
-    public RegionManager             getRegionManager()             { return regionManager; }
+    public IRegionManager            getRegionManager()             { return regionManager; }
     public MenuManager               getMenuManager()               { return menuManager; }
     public ScheduleManager          getScheduleManager()           { return scheduleManager; }
     public ServerPropertiesManager   getServerPropertiesManager()   { return serverPropertiesManager; }
     public HistoryManager            getHistoryManager()            { return historyManager; }
     public VoteManager               getVoteManager()               { return voteManager; }
+    public ResetCommand             getResetCommand()              { return resetCommand; }
     public UpdateChecker             getUpdateChecker()             { return updateChecker; }
+    public IntegrationManager      getIntegrationManager()        { return integrationManager; }
 }

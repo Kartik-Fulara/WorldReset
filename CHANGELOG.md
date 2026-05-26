@@ -7,6 +7,87 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.7.0] — 2026-05-26
+### Added
+- **Discord Webhook Enhancements:**
+  - Added new `{schedule}` placeholder to Discord templates.
+  - Automatically displays the active CRON expression, Interval, or Daily reset time in notifications.
+- **CRON Scheduling:**
+  - Added support for standard 5-field CRON expressions (e.g., `0 0 * * 5` for Fridays at midnight).
+  - New `schedule.cron` config key and lightweight internal `CronParser` for zero-overhead performance.
+- **Template Mode (Instant Reset):**
+  - Reset worlds nearly instantaneously by copying from a master `templates` directory instead of regenerating.
+  - New `reset.use-template` and `reset.template-directory` configuration options.
+- **Security & Health Pre-checks:**
+  - **Disk Space Pre-check:** Plugin now verifies available disk space before zipping backups or extracting restores to prevent data corruption.
+  - **SHA-256 Checksum Verification:** Backups now generate `.sha256` files. Integrity is verified automatically before every restoration.
+- **Integrations:**
+  - **Multiverse-Core:** Automatically unregisters worlds before deletion and re-imports them after reset/restore, fixing "unloaded world" issues.
+  - **FAWE (FastAsyncWorldEdit):** Added foundational support for region-specific resets via schematics.
+- **Interactive Vote GUI:**
+  - Replaced text-based voting with a visual chest GUI featuring large "YES/NO" buttons.
+  - GUI automatically opens for all players when a community reset vote is initiated.
+- **Maven & Shading:**
+  - Configured `maven-shade-plugin` to bundle and relocate dependencies, ensuring a single, conflict-free JAR for all server environments.
+
+## [1.6.0] — 2026-05-26
+### Added
+- **API Expansion:**
+  - New custom Bukkit events: `WorldBackupStartEvent`, `WorldBackupCompleteEvent`, `WorldRestoreStartEvent`, `WorldRestoreCompleteEvent`.
+  - New public `WorldResetUtil` class containing production-ready `unzip`, `zipDirectory`, and `deleteDirectoryNio` utilities for developer use.
+- **Security & Reliability (Senior QA Audit):**
+  - **Zip Slip Protection:** Added canonical path validation to world extraction logic.
+  - **Safe Restoration:** `restoreBackup` now extracts to a temporary folder and verifies success *before* deleting active worlds, preventing data loss from corrupt archives.
+  - **Main Thread Optimization:** Moved Discord start notifications to an async task to prevent server freezes if Discord's API is slow.
+- **Refactoring:**
+  - Decomposed `ResetManager.executeReset()` into clearly defined phases: `prepareReset`, `performAsyncDeletion`, and `finalizeReset`.
+  - Hardened `MenuManager` by replacing command-string invocation (`player.performCommand`) with direct API calls, as per project mandates.
+  - Removed redundant internal file utilities in favor of the new `WorldResetUtil` API.
+
+## [1.5.0] — 2026-05-26
+### Added
+- **Backup Restoration System:**
+  - `/worldreset backup list` to view all available ZIP archives in the backup directory.
+  - `/worldreset backup restore <zip>` to restore worlds from an archive (requires `--confirm`).
+  - New **Backup & Restore GUI** accessible via the dashboard.
+  - Interactive "Restore" menu listing backups with size and date.
+- **Discord Webhook Integration for Backups:**
+  - Summary notification sent after every world backup (manual or automatic).
+  - Detailed notifications for restoration start, success, and failure events.
+- **Improved Backup Management:**
+  - `/worldreset backup enable/disable` command and GUI toggle.
+  - `/worldreset backup dir <path>` to customize backup location.
+- **GUIs:**
+  - Rearranged main dashboard to include "Backup & Restore" menu.
+  - Moved "History" to a dedicated slot in the dashboard.
+
+## [1.4.9] — 2026-05-23
+### Added
+- **New CI/CD Workflow** (`build-release.yml`) — Implemented a modern Build & Release pipeline that supports:
+  - **Multi-Language Detection:** Automatically identifies and builds Node.js, Python, Java (Maven/Gradle), Rust, Go, PHP, .NET, and Docker projects.
+  - **Artifact Packaging:** Packages build results into `artifact.tar.gz` for cross-job and cross-account usage.
+  - **Pipeline Dispatch:** Triggers downstream deployment workflows in separate GitHub accounts via `repository_dispatch`.
+- **Workflow Configuration** (`workflow-config.yml`) — Added a dedicated configuration file for managing deployment targets and build settings outside of the workflow YAML.
+
+### Changed
+- **Infrastructure Overhaul:** Replaced the monolithic `release.yml` with the new modular `build-release.yml` to align with the multi-account GitHub Actions architecture.
+
+## [1.4.8] — 2026-05-22
+### Added
+- **Interactive GUI Dashboard** (`MenuManager`) — Complete overhaul of `/worldreset menu`. Now features a multi-page UI for managing all modules:
+  - **Core Hub:** Reset controls and status.
+  - **Settings Panels:** Dedicated menus for Reset, Notifications, Voting, Schedule, Worlds, and Player Data.
+  - **Chat-Input Integration:** Clicking settings like Webhook URL or Kick Message now prompts for values in chat.
+  - **Direct API Integration:** GUI actions now trigger manager methods directly for better reliability.
+- **`COMMANDS.md`** — Comprehensive command reference guide added to the project root.
+- **`GEMINI.md`** — Project mandates for documentation and technical standards.
+
+### Fixed
+- **Path Relativization Crash** (`ResetManager`) — Fixed `IllegalArgumentException` in both deletion and backup phases by ensuring absolute paths are used before relativization. This crash was previously causing resets to abort prematurely, which prevented new seeds from being written.
+- **Server Crash on World Load** (`ResetManager`) — Reverted a problematic change in `writeSeedToLevelDat` that attempted to use modern (1.21) NBT structures. Providing an incomplete `WorldGenSettings` compound without a full `dimensions` registry caused Paper 1.21 to crash with an `IllegalStateException: No key dimensions in MapLike`. Reverting to a legacy `DataVersion` (2230) safely delegates the world upgrade process to Paper's DataFixerUpper, preserving the custom seed without crashing.
+- **Missing Import in UpdateChecker** — Resolved compilation error by adding the missing `WorldResetPlugin` import.
+- **ConfigManager API** — Added public setters for vote settings to support GUI-driven updates.
+
 ## [1.4.7] — 2026-05-20
 ### Fixed
 - Added missing `worldreset.admin` permission checks for several sensitive subcommands in `/worldreset`.
