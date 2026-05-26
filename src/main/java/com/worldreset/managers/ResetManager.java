@@ -502,6 +502,11 @@ public class ResetManager {
             regenerateWorlds();
         }
         
+        // 🔌 FAWE Region Resets
+        if (cfg.isRegionsEnabled() && plugin.getIntegrationManager().hasFawe()) {
+            applyRegionResets(cfg);
+        }
+
         pastePreservedRegions();
         applyGamerulesAndDifficulty();
         applyWorldBorder();
@@ -566,6 +571,26 @@ public class ResetManager {
                 return FileVisitResult.CONTINUE;
             }
         });
+    }
+
+    private void applyRegionResets(ConfigManager cfg) {
+        log.info("[FAWE] Applying region resets...");
+        for (Map<?, ?> entry : cfg.getRegionsList()) {
+            try {
+                String world = (String) entry.get("world");
+                String schem = (String) entry.get("schematic");
+                if (schem == null) schem = (String) entry.get("name") + ".schem"; // fallback
+
+                Map<?, ?> pos = (Map<?, ?>) entry.get("paste_at");
+                int x = ((Number) pos.get("x")).intValue();
+                int y = ((Number) pos.get("y")).intValue();
+                int z = ((Number) pos.get("z")).intValue();
+
+                plugin.getIntegrationManager().getFawe().resetRegion(world, schem, x, y, z);
+            } catch (Exception e) {
+                log.warning("[FAWE] Failed to apply region reset: " + e.getMessage());
+            }
+        }
     }
 
     private void recordResetCompletion(String mode) {

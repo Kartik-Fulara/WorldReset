@@ -379,7 +379,14 @@ public class ConfigManager {
     public void setScheduleDailyTime(String time)  { cfg().set("schedule.daily-time",        time); save(); }
     public void setScheduleCron(String cron)       { cfg().set("schedule.cron",              cron); save(); }
 
-    // ── Template Mode ───────────────────────────────────────────────────────
+    // ── Regions ────────────────────────────────────────────────────────────
+
+    public boolean isRegionsEnabled() { return cfg().getBoolean("regions.enabled", false); }
+    public void setRegionsEnabled(boolean val) { cfg().set("regions.enabled", val); save(); }
+
+    public List<Map<?, ?>> getRegionsList() {
+        return cfg().getMapList("regions.list");
+    }
 
     public boolean isUseTemplate()           { return cfg().getBoolean("reset.use-template",      false); }
     public String  getTemplateDirectory()    { return cfg().getString( "reset.template-directory", "templates"); }

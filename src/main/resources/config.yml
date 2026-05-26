@@ -116,16 +116,20 @@ spawn:
   yaw: 0.0
   pitch: 0.0
 
-# ── Selective Region Preservation (WorldEdit) ─────────────────────────────────
-# Allows you to save specific areas (like a spawn hub) and paste them back after a reset.
+# ── FAWE Region Resets (High Performance) ─────────────────────────────────────
+# This feature requires FastAsyncWorldEdit (FAWE) to be installed.
+# Unlike "Preservation" (which saves a region before deleting it), this feature
+# allows you to paste a pre-existing .schem file from your schematics folder
+# immediately after a world reset. Perfect for Spawn Hubs or Lobbies.
 regions:
   enabled: false
+  # List of schematic resets.
+  # Files must be placed in: /plugins/WorldResetPlugin/schematics/
   list:
     - name: "spawn_hub"
       world: "world"
-      min: { x: -50, y: 60, z: -50 }
-      max: { x: 50, y: 100, z: 50 }
-      paste_at: { x: -50, y: 64, z: -50 }
+      schematic: "my_lobby.schem"
+      paste_at: { x: 0, y: 64, z: 0 }
 
 # ── Pre / Post reset commands ─────────────────────────────────────────────────
 pre-reset-commands: []
