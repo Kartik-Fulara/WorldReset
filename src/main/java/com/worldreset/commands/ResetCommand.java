@@ -151,6 +151,10 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
                 new AutomatedTester(plugin).runAllTests(sender);
                 break;
+            case "region-reset":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                handleManualRegionReset(sender, args);
+                break;
             case "w":
             case "worlds":
                 if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
@@ -428,6 +432,52 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
     }
 
     // ── worlds ─────────────────────────────────────────────────────────────
+
+    private void handleManualRegionReset(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            msg(sender, red("Usage: /worldreset region-reset <name>"));
+            return;
+        }
+
+        if (!plugin.getIntegrationManager().hasFawe()) {
+            msg(sender, red("FastAsyncWorldEdit (FAWE) is not installed or enabled!"));
+            return;
+        }
+
+        String targetName = args[1];
+        ConfigManager cfg = plugin.getConfigManager();
+        Map<?, ?> found = null;
+
+        for (Map<?, ?> region : cfg.getRegionsList()) {
+            if (targetName.equalsIgnoreCase((String) region.get("name"))) {
+                found = region;
+                break;
+            }
+        }
+
+        if (found == null) {
+            msg(sender, red("Region '" + targetName + "' not found in config.yml list."));
+            return;
+        }
+
+        msg(sender, green("Manually triggering FAWE reset for region: ") + white(targetName));
+        
+        try {
+            String world = (String) found.get("world");
+            String schem = (String) found.get("schematic");
+            if (schem == null) schem = (String) found.get("name") + ".schem";
+
+            Map<?, ?> pos = (Map<?, ?>) found.get("paste_at");
+            int x = ((Number) pos.get("x")).intValue();
+            int y = ((Number) pos.get("y")).intValue();
+            int z = ((Number) pos.get("z")).intValue();
+
+            plugin.getIntegrationManager().getFawe().resetRegion(world, schem, x, y, z);
+            msg(sender, green("Region reset dispatched to FAWE. Check console for completion logs."));
+        } catch (Exception e) {
+            msg(sender, red("Error triggering region reset: " + e.getMessage()));
+        }
+    }
 
     private void handleWorlds(CommandSender sender, String[] args) {
         ConfigManager cfg = plugin.getConfigManager();
@@ -1622,6 +1672,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             addIfHas(sender, result, "reload",      "worldreset.reload"); 
             addIfHas(sender, result, "history",     "worldreset.history");
             addIfHas(sender, result, "run-tests",   "worldreset.admin");
+            addIfHas(sender, result, "region-reset","worldreset.admin");
             addIfHas(sender, result, "menu",        "worldreset.use");
             addIfHas(sender, result, "schedule",    "worldreset.schedule");
             addIfHas(sender, result, "backup",      "worldreset.backup");
@@ -1639,6 +1690,13 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             switch (sub) {
                 case "help":
                     for (int i = 1; i <= HELP_TOTAL_PAGES; i++) result.add(String.valueOf(i));
+                    break;
+                case "region-reset":
+                    if (sender.hasPermission(PERM)) {
+                        for (Map<?, ?> r : cfg.getRegionsList()) {
+                            result.add((String) r.get("name"));
+                        }
+                    }
                     break;
                 case "start":
                     if (hasPerm(sender, "worldreset.start")) {
