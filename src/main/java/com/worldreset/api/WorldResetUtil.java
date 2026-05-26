@@ -108,12 +108,6 @@ public class WorldResetUtil {
             }
 
             @Override
-            public FileVisitResult postVisitDirectory(DirectoryStream<Path> dir, IOException exc) throws IOException {
-                // Not used in this implementation pattern but available for custom logic
-                return FileVisitResult.CONTINUE;
-            }
-
-            @Override
             public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
                 if (exc != null) throw exc;
                 String rel = rootPath.relativize(dir.toAbsolutePath()).toString().replace('\\', '/');

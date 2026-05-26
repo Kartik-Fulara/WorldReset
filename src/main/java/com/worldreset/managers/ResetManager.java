@@ -1464,15 +1464,15 @@ public class ResetManager {
         List<String> noPreserve = Collections.emptyList();
         if (cfg.isPlayerDataClearAdvancements()) {
             File dir = new File(root, "advancements");
-            if (dir.exists()) deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
+            if (dir.exists()) WorldResetUtil.deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
         }
         if (cfg.isPlayerDataClearStats()) {
             File dir = new File(root, "stats");
-            if (dir.exists()) deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
+            if (dir.exists()) WorldResetUtil.deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
         }
         if (cfg.isPlayerDataClearInventory()) {
             File dir = new File(root, "playerdata");
-            if (dir.exists()) deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
+            if (dir.exists()) WorldResetUtil.deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
         }
 
         log.info("Player data cleared.");
