@@ -5,6 +5,7 @@ import com.worldreset.managers.ConfigManager;
 import com.worldreset.managers.ResetManager;
 import com.worldreset.managers.ScheduleManager;
 import com.worldreset.managers.ServerPropertiesManager;
+import com.worldreset.utils.AutomatedTester;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.chat.ClickEvent;
 import net.md_5.bungee.api.chat.HoverEvent;
@@ -144,6 +145,11 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             case "config":
                 if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
                 handleConfig(sender, args);
+                break;
+            case "test":
+            case "run-tests":
+                if (!hasPerm(sender, "worldreset.admin")) { denyPerm(sender); break; }
+                new AutomatedTester(plugin).runAllTests(sender);
                 break;
             case "w":
             case "worlds":
@@ -1455,6 +1461,7 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(section("Core"));
                 help(sender, "/worldreset start",                 "Begin a reset (asks for confirmation). Add --now to skip countdown.");
                 help(sender, "/worldreset menu",                  "Open the visual dashboard menu.");
+                help(sender, "/worldreset run-tests",             "🧪 Run automated health check & safety audit.");
                 help(sender, "/worldreset start --now --confirm", "Start immediately, no countdown, no second prompt.");
                 help(sender, "/worldreset cancel",                "Stop the running countdown.");
                 help(sender, "/worldreset status",                "Full snapshot: worlds, seeds, schedule, etc.");
@@ -1614,8 +1621,10 @@ public class ResetCommand implements CommandExecutor, TabCompleter {
             addIfHas(sender, result, "status",      "worldreset.status");
             addIfHas(sender, result, "reload",      "worldreset.reload"); 
             addIfHas(sender, result, "history",     "worldreset.history");
+            addIfHas(sender, result, "run-tests",   "worldreset.admin");
             addIfHas(sender, result, "menu",        "worldreset.use");
-            addIfHas(sender, result, "schedule",    "worldreset.schedule");            addIfHas(sender, result, "backup",      "worldreset.backup");
+            addIfHas(sender, result, "schedule",    "worldreset.schedule");
+            addIfHas(sender, result, "backup",      "worldreset.backup");
 
             // Admin-only subcommands
             if (sender.hasPermission(PERM)) {
