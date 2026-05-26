@@ -455,16 +455,6 @@ public class ConfigManager {
     public List<String> getPreResetCommands()  { return cfg().getStringList("pre-reset-commands"); }
     public List<String> getPostResetCommands() { return cfg().getStringList("post-reset-commands"); }
 
-    // ── Preserved Regions (WorldEdit) ──────────────────────────────────────
-
-    public boolean isRegionsEnabled() {
-        return cfg().getBoolean("regions.enabled", false);
-    }
-
-    public List<Map<?, ?>> getPreservedRegions() {
-        return cfg().getMapList("regions.list");
-    }
-
     /**
      * When true, a pre-reset command that returns false or throws will abort the reset.
      * When false (default), failures are logged as warnings and the reset continues.
