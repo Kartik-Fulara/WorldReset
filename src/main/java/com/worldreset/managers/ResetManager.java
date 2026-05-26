@@ -682,7 +682,7 @@ public class ResetManager {
         ConfigManager cfg = plugin.getConfigManager();
         if (!cfg.isRegionsEnabled()) return;
 
-        for (Map<?, ?> map : cfg.getPreservedRegions()) {
+        for (Map<?, ?> map : cfg.getRegionsList()) {
             try {
                 String name = (String) map.get("name");
                 String worldName = (String) map.get("world");
@@ -714,7 +714,7 @@ public class ResetManager {
         ConfigManager cfg = plugin.getConfigManager();
         if (!cfg.isRegionsEnabled()) return;
 
-        for (Map<?, ?> map : cfg.getPreservedRegions()) {
+        for (Map<?, ?> map : cfg.getRegionsList()) {
             try {
                 String name = (String) map.get("name");
                 String worldName = (String) map.get("world");
