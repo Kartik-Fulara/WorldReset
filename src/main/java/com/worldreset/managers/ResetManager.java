@@ -1462,17 +1462,21 @@ public class ResetManager {
 
         // Disk-level deletion (complementary to extra-paths.delete)
         List<String> noPreserve = Collections.emptyList();
-        if (cfg.isPlayerDataClearAdvancements()) {
-            File dir = new File(root, "advancements");
-            if (dir.exists()) WorldResetUtil.deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
-        }
-        if (cfg.isPlayerDataClearStats()) {
-            File dir = new File(root, "stats");
-            if (dir.exists()) WorldResetUtil.deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
-        }
-        if (cfg.isPlayerDataClearInventory()) {
-            File dir = new File(root, "playerdata");
-            if (dir.exists()) WorldResetUtil.deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
+        try {
+            if (cfg.isPlayerDataClearAdvancements()) {
+                File dir = new File(root, "advancements");
+                if (dir.exists()) WorldResetUtil.deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
+            }
+            if (cfg.isPlayerDataClearStats()) {
+                File dir = new File(root, "stats");
+                if (dir.exists()) WorldResetUtil.deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
+            }
+            if (cfg.isPlayerDataClearInventory()) {
+                File dir = new File(root, "playerdata");
+                if (dir.exists()) WorldResetUtil.deleteDirectoryNio(dir.toPath(), noPreserve, root.toPath());
+            }
+        } catch (IOException e) {
+            log.warning("Failed to clear some disk-level player data: " + e.getMessage());
         }
 
         log.info("Player data cleared.");
